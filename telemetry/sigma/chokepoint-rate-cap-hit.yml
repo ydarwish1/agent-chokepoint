@@ -1,0 +1,46 @@
+title: Agent-Chokepoint - Run Cap Hit
+id: 6a1b3f92-7d0e-4e5a-bc28-9e4d5c8f30dd
+status: experimental
+description: >
+  A per-run cap blocked a call - any rule id with the limit: prefix
+  (max_tool_calls_per_run, max_wall_clock_seconds,
+  max_repeated_identical_calls; OWASP LLM10 unbounded consumption). A run is
+  one MCP client session with the proxy (D-022), and `run_id` identifies it
+  (D-025), so GROUP BY run_id is how these events are triaged: one event is an
+  agent reaching its budget, which is ordinary; a run whose events go from
+  allow to an unbroken TAIL of one limit: id has stopped being served, because
+  the call-count and wall-clock caps stay tripped for the rest of that run.
+  That second shape is exactly the B-040 outage - a deployed gateway holding a
+  single session forever went 100% limit:max_wall_clock_seconds after 900s
+  while its pod stayed Ready and Live. This rule plus run_id is the detection
+  that incident lacked, and D-024's decisions.jsonl is the collection path it
+  lacked. A healthy long-lived gateway recycles its session under the caps, so
+  run_id changes periodically with no such tail.
+references:
+  - https://raw.githubusercontent.com/ydarwish1/agent-chokepoint/main/telemetry/event-schema.json
+author: Agent-Chokepoint
+date: 2026-08-04
+logsource:
+  product: agent-chokepoint
+  service: decisions
+detection:
+  selection:
+    verdict: block
+    rule_id|startswith: 'limit:'
+  condition: selection
+fields:
+  - ts
+  - agent_id
+  - run_id
+  - server
+  - tool
+  - rule_id
+falsepositives:
+  - Legitimately long or busy agent runs with caps tuned too low for the
+    workload - a run that ends on its cap is expected. Triage on the SHAPE
+    within one run_id rather than on the count. An isolated cap event is
+    normal; an unbroken tail of them is a run that has gone dark, which is
+    the B-040 signature.
+level: medium
+tags:
+  - owasp.llm10

@@ -1,0 +1,231 @@
+{{/*
+The co-located chokepoint: ONE container running client -> proxy -> upstream
+over stdio. Not three containers, and not three pods: pep/canonicalize.py
+resolves a call path against the PROXY PROCESS's own filesystem (realpath /
+scandir / stat). If the proxy and the tool server do not see the identical
+filesystem at the identical path, the proxy judges a different file than the
+tool opens and D-011's case/symlink protections become decorative. Containers
+in one pod do not share a root filesystem; one container is what keeps D-011
+true.
+
+The hardening below is HARDCODED, not templated. Every value is a frozen
+constant, and a hardening chart whose hardening can be turned off with `--set`
+is a suggestion rather than a control.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agent-chokepoint.fullname" . }}
+  labels:
+    {{- include "agent-chokepoint.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "agent-chokepoint.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # The proxy loads the policy ONCE at startup. Without this, editing the
+        # policy ConfigMap would change the mounted file and leave the running
+        # gateway enforcing the old rules. This rolls the pod on any change.
+        checksum/policy: {{ include (print $.Template.BasePath "/configmap-policy.yaml") . | sha256sum }}
+      labels:
+        {{- include "agent-chokepoint.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "agent-chokepoint.serviceAccountName" . }}
+      # Half of the minimal-RBAC answer; see templates/serviceaccount.yaml.
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # DELIBERATELY NO `stdin: true`. It was required while the container's
+          # main process WAS the proxy: with stdin at /dev/null, stdio_server()
+          # read EOF immediately and the process exited -> CrashLoopBackOff. The
+          # main process is now the DRIVER, which is the client: it spawns the
+          # proxy and owns that child's stdin as its parent, and it never reads
+          # the container's own stdin. Holding a stream open for a consumer that
+          # no longer exists would be an unexamined knob hiding what the pod
+          # actually needs. Checked before removing: nothing else depends on it
+          # — deploy/demo/cluster_acceptance.py reaches the pod with
+          # `kubectl exec -i`, which pipes into a NEW process and needs no
+          # pod-spec stdin (that is `kubectl attach`), and no other file in the
+          # repo references it.
+          tty: false
+          command:
+            - {{ .Values.gateway.interpreter | quote }}
+            {{- range .Values.gateway.args }}
+            - {{ . | quote }}
+            {{- end }}
+            - {{ .Values.upstream.interpreter | quote }}
+            {{- range .Values.upstream.args }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            - name: PATH
+              value: {{ .Values.env.path | quote }}
+          {{- with .Values.envFrom }}
+          # Secret REFERENCES only — env-inline secrets are forbidden, so there
+          # is no values key that can carry a literal.
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          # LIVENESS: is the driver still alive AND still working? It bumps
+          # {{ .Values.sandboxPath }}/heartbeat every 10s; this probe reads
+          # that file's MTIME and requires it to be FRESH. It does not merely
+          # test that the file exists. Existence alone is worthless: the file
+          # outlives the process that wrote it, so a dead or wedged driver would
+          # look healthy forever and the pod would sit there enforcing nothing.
+          # That is precisely the failure this change exists to prevent.
+          # os.stat() raises when the file is absent, so "never started" fails
+          # the same check as "stopped beating" — one probe covers both.
+          #
+          # 40s = 4 missed bumps: wide enough that one late bump under the 500m
+          # CPU limit is not a restart, narrow enough that a dead driver is
+          # caught inside ~70s (first stale read >=40s after the last bump, then
+          # failureThreshold 3 x periodSeconds 10). initialDelaySeconds 60 is
+          # the startup budget, and it is load-bearing: the driver beats only
+          # once it reaches its holding phase, which is AFTER the acceptance
+          # legs, so this delay must cover image start, interpreter start, the
+          # driver spawning the proxy which spawns the upstream, AND the legs
+          # themselves — a restart mid-acceptance would be self-inflicted. The
+          # contract this sets for the driver: FIRST heartbeat within 60s of
+          # container start; the kubelet restarts at ~90s (60 + 3 x 10).
+          livenessProbe:
+            exec:
+              command:
+                - {{ .Values.gateway.interpreter | quote }}
+                - -c
+                - >-
+                  import os, sys, time;
+                  sys.exit(0 if time.time() - os.stat({{ printf "%s/heartbeat" .Values.sandboxPath | quote }}).st_mtime < 40 else 1)
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # READINESS: did a REAL tool call cross the DEPLOYED proxy and come
+          # back with the verdict the policy owes it? The driver creates
+          # {{ .Values.sandboxPath }}/ready ONLY when every acceptance leg
+          # passed, so Ready now means enforcement was exercised and was right.
+          # Before, Ready meant the modules imported and the policy parsed —
+          # true of a pod that had never judged a single call.
+          #
+          # No value here can make this lax: the probe reads an artifact that
+          # only a fully passing run produces. Kubernetes never expires a
+          # readiness probe that has not yet succeeded — the pod simply stays
+          # NotReady and keeps probing — so a broken driver cannot age into
+          # Ready; it is the rollout's `--wait` timeout, not failureThreshold,
+          # that bounds the wait. failureThreshold governs the other direction
+          # (a pod that WAS Ready), where 3 x 5s de-registers promptly.
+          # initialDelaySeconds 10 only avoids probing before any run could
+          # plausibly have finished.
+          readinessProbe:
+            exec:
+              command:
+                - {{ .Values.gateway.interpreter | quote }}
+                - -c
+                - >-
+                  import os, sys;
+                  sys.exit(0 if os.path.exists({{ printf "%s/ready" .Values.sandboxPath | quote }}) else 1)
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: policy
+              mountPath: {{ dir .Values.policyPath | quote }}
+              readOnly: true
+            # Also the driver's --state-dir: acceptance.json, `ready` and
+            # `heartbeat` are written here, which is why both probes read it.
+            - name: sandbox
+              mountPath: {{ .Values.sandboxPath | quote }}
+            # readOnlyRootFilesystem: true leaves no writable /tmp. The demo
+            # drivers this deployment runs use tempfile.TemporaryDirectory
+            # (proxy/demo/run_demo.py:117, pep/demo/two_doors_paths.py:799,
+            # hooks/demo/side_by_side.py:920), which fails without one.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: policy
+          configMap:
+            name: {{ include "agent-chokepoint.fullname" . }}-policy
+            defaultMode: 0444
+        # CP-05, the deployment half. This volume is the driver's --state-dir,
+        # and the proxy's --log-file lands on it as decisions.jsonl
+        # (deploy/demo/gateway_driver.py:591) beside proxy-stderr.log and the
+        # upstream's EXECUTED.log. Unbounded, it was a write amplifier pointed
+        # at the node: one REFUSED tools/call used to append its arguments in
+        # full, so a single 8 MiB argument bought an 8 MiB audit line from a
+        # call that never reached a tool.
+        #
+        # The proxy now bounds the decision LINE at
+        # proxy/server.py:MAX_LOGGED_LINE (16 KiB), measured on the serialisation
+        # the sink writes; this bounds the FILE, and the two are independent —
+        # a bounded line repeated without limit still fills a disk. Stated
+        # precisely because the first pass of this entry got it wrong: the bound
+        # it shipped was per STRING, which the same 8 MiB re-shaped as 32,768
+        # strings of 256 characters walked straight through, so the comment here
+        # claimed a line bound that measurement did not support.
+        #
+        # The arithmetic, so the trade is legible rather than asserted. At
+        # 16 KiB a line, 512Mi holds 32,768 maximum-size decision events; the
+        # shipped policy's limits.max_tool_calls_per_run is 100, so one run
+        # writes at most about 1.6 MB whatever the agent sends, and filling this
+        # volume takes a few hundred full-cap runs. Before the line bound the
+        # same 512Mi was about sixty refused calls.
+        #
+        # HARDCODED like the rest of the hardening above: a size limit that
+        # `--set` can lift is a suggestion. 512Mi against a cluster VM with
+        # 4 CPU / 3.8 GiB total (values.yaml, beside .Values.resources) leaves
+        # the pod's own memory limit the tighter constraint on everything except
+        # log volume, which is the one thing an agent can drive.
+        #
+        # State the cost rather than hide it: exceeding an emptyDir sizeLimit is
+        # an EVICTION, so a gateway that logs past this goes down. That is the
+        # trade taken deliberately — a pod evicted with a reason on it is an
+        # event an operator can see, and a node whose ephemeral storage is
+        # exhausted takes down its neighbours silently. It is only a defensible
+        # trade BECAUSE the line is bounded: a sizeLimit over unbounded lines
+        # converts an agent-driven disk fill into an agent-driven eviction at a
+        # handful of calls, which is a cheaper attack than the one it closes.
+        # This is also the `Ephemeral Storage limit is not set` follow-up that
+        # deploy/scan/SCAN-REPORT.md recorded rather than claimed as done, for
+        # the volumes half of it; the container-level ephemeral-storage request
+        # and limit live in .Values.resources and are not set here.
+        - name: sandbox
+          emptyDir:
+            sizeLimit: 512Mi
+        # The twin, and it was left at `{}` on the first pass of this entry: /tmp
+        # is on the same node's ephemeral storage as the volume above, so an
+        # unbounded one here gives back exactly the eviction-free write path the
+        # sizeLimit above was added to close. Nothing in this deployment writes a
+        # decision log to /tmp — the three drivers use it for
+        # tempfile.TemporaryDirectory trees (see the mount above) — so this is
+        # the smaller of the two on purpose: 64Mi is far past what a temp tree
+        # for a demo run needs, and a limit sized to the actual use is what makes
+        # exceeding it mean something.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

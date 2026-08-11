@@ -1,0 +1,11 @@
+# GUARD-OFF CONTROL LEG — NetworkPolicy.
+#
+# The ONLY difference from values.yaml. Rendering with this file must remove
+# the NetworkPolicy object and change nothing else; a control that moves two
+# variables proves nothing.
+#
+# Not for production. This exists so "the NetworkPolicy blocked it" can be
+# shown against "with the policy absent, the same probe succeeds" — on Calico,
+# because kindnet does not enforce NetworkPolicy at all (measured).
+networkPolicy:
+  enabled: false

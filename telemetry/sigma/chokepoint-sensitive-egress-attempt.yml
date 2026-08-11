@@ -1,0 +1,61 @@
+title: Agent-Chokepoint - Credential In A Judged Tool Call, Or An Egress Rule Refusal
+id: 8f3d2a11-5b7e-4c0f-9a64-2e8b1c7d43bb
+status: experimental
+description: >
+  Two legs, and the second is WIDER than the first - read the rule_id field to
+  tell them apart. Leg one: a call blocked by a policy rule mapped to OWASP
+  LLM02, which is an egress refusal (sensitive data riding an outbound
+  argument, the exfiltration leg of the lethal trifecta). Leg two: the
+  enforcement point detected a credential in the judged arguments of ANY call -
+  the event's arguments field is then the literal redaction marker - at ANY
+  verdict, on ANY tool, including local reads, local shell commands, and calls
+  that never reached a tool at all. The redaction that keeps the credential out
+  of this log (B-015) is itself the detectable signal, and that is the whole of
+  what leg two establishes.
+  B-113: this rule was titled "Sensitive Data In An Outbound Tool Call" at
+  level critical and argued that leg two meant "data that actually left, not an
+  attempt". It does not. Measured on the shipped policy, five calls through the
+  real proxy: the rule fired on four of them, and only ONE was an egress
+  refusal - the others were a local read, a refused write that never reached a
+  tool, and a local echo. No field in this event distinguishes an egress tool
+  from a local one; the published schema says so in those words, and says to
+  say "attempt" in alert text rather than "exfiltration". The title, level and
+  description are what changed. The detection is deliberately unchanged:
+  narrowing leg two to the tools a deployment names as egress is not something
+  the event alone can do.
+references:
+  - https://genai.owasp.org/llmrisk/llm022025-sensitive-information-disclosure/
+  - https://raw.githubusercontent.com/ydarwish1/agent-chokepoint/main/telemetry/event-schema.json
+author: Agent-Chokepoint
+date: 2026-08-04
+modified: 2026-08-08
+logsource:
+  product: agent-chokepoint
+  service: decisions
+detection:
+  egress_rule_block:
+    verdict: block
+    owasp: LLM02
+  credential_detected:
+    arguments: '[REDACTED: sensitive content detected in arguments]'
+  condition: egress_rule_block or credential_detected
+fields:
+  - ts
+  - agent_id
+  - server
+  - tool
+  - verdict
+  - rule_id
+falsepositives:
+  - Well-formed but non-live credentials matching the fixed pattern list -
+    documentation examples (AWS's AKIAIOSFODNN7EXAMPLE), test fixtures,
+    revoked keys. The matchers are published patterns over known credential
+    formats (engine/predicates.py), NOT entropy-based, so an FP is always
+    pattern-shaped. Verify against the tool and target before dismissing.
+  - A credential in the arguments of a call to a LOCAL tool - a read, a shell
+    command - which is leg two firing correctly and is not an egress event.
+    Nothing left the host. Triage by rule_id and tool, not by this rule's
+    presence in the stream (B-113).
+level: high
+tags:
+  - owasp.llm02

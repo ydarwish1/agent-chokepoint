@@ -1,0 +1,18 @@
+# GUARD-OFF CONTROL LEG — D-020 command resolution.
+#
+# The ONLY difference from values.yaml: the upstream command is spelled as a
+# bare NAME instead of an absolute path. One scalar.
+#
+# Why this single character matters: subprocess.py:1911-1912 — if the command
+# contains a "/", `executable_list = (executable,)` and there is NO PATH search
+# at all; otherwise the list is built from os.get_exec_path(env). So
+# "/usr/local/bin/python3" is resolved by the kernel and "python3" is resolved
+# by PATH, and a shim earlier on PATH wins the second case and not the first.
+#
+# The env.path pin is deliberately left ALONE here. Both legs must share the
+# same PATH and the same planted shim so that how the command is SPELLED is the
+# only variable.
+#
+# Not for production. This is the leg that is supposed to be exploitable.
+upstream:
+  interpreter: python3

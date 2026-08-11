@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/ABSOLUTE/PATH/TO/agent-chokepoint/.venv/bin/python /ABSOLUTE/PATH/TO/agent-chokepoint/hooks/chokepoint_hook.py --policy /ABSOLUTE/PATH/TO/agent-chokepoint/policy/policy.example.yaml --log-file /ABSOLUTE/PATH/TO/chokepoint-decisions.jsonl"
+          }
+        ]
+      },
+      {
+        "matcher": "^(Read|Write|Edit|NotebookEdit|Bash|WebFetch)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/ABSOLUTE/PATH/TO/agent-chokepoint/.venv/bin/python /ABSOLUTE/PATH/TO/agent-chokepoint/hooks/chokepoint_hook.py --policy /ABSOLUTE/PATH/TO/agent-chokepoint/policy/policy.example.yaml --log-file /ABSOLUTE/PATH/TO/chokepoint-decisions.jsonl"
+          }
+        ]
+      }
+    ]
+  }
+}

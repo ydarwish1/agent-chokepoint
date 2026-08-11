@@ -1,0 +1,114 @@
+# agent-chokepoint — hardened deployment values.
+#
+# WHAT IS NOT HERE, ON PURPOSE:
+#   - no Service: the proxy is stdio on both sides and binds no port.
+#   - no ingress / HPA / ServiceMonitor: nothing to route, scale or scrape.
+#   - no securityContext knobs: every hardening value is hardcoded in
+#     templates/deployment.yaml. A hardening chart whose hardening can be
+#     switched off with `--set` is a suggestion, not a control.
+#   - no key for a literal secret value. Secrets must come from a secrets
+#     manager, never env-inline, so the chart accepts secret REFERENCES only
+#     (see `envFrom` below).
+
+replicaCount: 1
+
+image:
+  repository: agent-chokepoint
+  tag: ci
+  # The image is side-loaded with `kind load docker-image`; there is no
+  # registry to pull it from, so Never/IfNotPresent, never Always.
+  pullPolicy: IfNotPresent
+
+# Where the policy ConfigMap is mounted, read-only. gateway.args below must
+# name this SAME path — the render check asserts the two agree.
+policyPath: /etc/chokepoint/policy.yaml
+
+# The one writable directory, and it now wears two hats:
+#   1. the upstream's --sandbox, holding EXECUTED.log — the reach ground truth;
+#   2. the driver's --state-dir, holding acceptance.json plus the two files the
+#      probes read: `ready` (created ONLY if every acceptance leg passed) and
+#      `heartbeat` (mtime bumped every 10s).
+# gateway.args AND upstream.args below must both name this SAME path.
+sandboxPath: /sandbox
+
+env:
+  # D-020, control 2 of 2. Pinned explicitly because dropping PATH does NOT
+  # fail closed: os.py:688-689 falls back to os.defpath (/bin:/usr/bin).
+  # mcp/client/stdio.py:56,75-90,128 scrubs the child env down to six keys
+  # taken from the PROXY's own os.environ, so pinning PATH here genuinely pins
+  # what the proxy execs.
+  path: /usr/local/bin:/usr/bin:/bin
+
+# Secret REFERENCES only — a list of envFrom sources, e.g.
+#   envFrom:
+#     - secretRef:
+#         name: chokepoint-secrets
+# The gateway needs no secret today, so this is empty and the rendered pod
+# carries no secret material at all.
+envFrom: []
+
+gateway:
+  # The long-lived container process. It is NOT the proxy any more: it is the
+  # DRIVER, the client end of the contract's client -> proxy -> upstream chain.
+  # The driver spawns the proxy, the proxy spawns the upstream named after the
+  # `--`, and real tool calls cross the DEPLOYED proxy. Before this, nothing
+  # ever spoke to the proxy's stdin, so "pod Ready" meant only "the modules
+  # imported and the policy parsed" — a much lower bar than this project's.
+  #
+  # D-020, control 1 of 2, applied to the driver's own argv0: absolute, so
+  # subprocess.py:1911-1912 takes the `executable_list = (executable,)` branch
+  # and performs no PATH search.
+  interpreter: /usr/local/bin/python3
+  # Everything between the interpreter and the upstream command, INCLUDING the
+  # `--` separator. The driver's interface is FROZEN:
+  #   <interpreter> /app/deploy/demo/gateway_driver.py \
+  #     --policy <policyPath> --state-dir <sandboxPath> -- <upstream argv...>
+  # `--policy` must equal policyPath and `--state-dir` must equal sandboxPath
+  # above; the render check asserts all three agree. The script path is
+  # /app/deploy/... because deploy/Dockerfile COPYs deploy/ to /app/deploy/.
+  args:
+    - /app/deploy/demo/gateway_driver.py
+    - --policy
+    - /etc/chokepoint/policy.yaml
+    - --state-dir
+    - /sandbox
+    - --
+
+upstream:
+  # THE D-020 VARIABLE. Spelled as an absolute path, so the command contains a
+  # "/" and subprocess never consults PATH (subprocess.py:1911-1912).
+  # values-unpinned-path.yaml flips THIS ONE SCALAR to a bare `python3` and
+  # nothing else — that is the guard-OFF leg. The driver's own interpreter
+  # above stays absolute in BOTH legs, so exactly one rendered token moves
+  # between them and the control keeps its single variable.
+  interpreter: /usr/local/bin/python3
+  args:
+    - /app/proxy/demo/upstream_server.py
+    - --sandbox
+    - /sandbox
+
+# Small. The cluster VM has 4 CPU / 3.8 GiB total and this pod runs up to three
+# CPython processes (driver + proxy + upstream child) plus a fourth, briefly,
+# per probe.
+resources:
+  requests:
+    cpu: 100m
+    memory: 192Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# The kubelet's SIGTERM now reaches the DRIVER (the container's pid 1), which
+# tears down the proxy, which tears down the upstream. The upstream child runs
+# in its OWN session (mcp/client/stdio.py:347, start_new_session=True), so that
+# SIGTERM never reaches it directly — only the proxy's teardown does, and that
+# teardown is close-stdin -> 2s -> SIGTERM -> 2s -> SIGKILL. That is a 4s
+# floor. 30s (the Kubernetes default, stated explicitly so the reason is on
+# record) leaves ~7x headroom; anything under ~10s risks the kubelet SIGKILLing
+# the proxy mid-teardown and orphaning a child the container never signalled.
+terminationGracePeriodSeconds: 30
+
+networkPolicy:
+  # Default-deny BOTH directions, no rules at all. values-no-networkpolicy.yaml
+  # sets this false and changes nothing else — the control leg.
+  enabled: true

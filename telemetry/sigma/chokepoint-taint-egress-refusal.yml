@@ -1,0 +1,59 @@
+title: Agent-Chokepoint - Outbound Call Refused From A Run That Read Untrusted Content
+id: 1c7a5f38-2d94-4e61-8b0a-6f3c2d5e77c4
+status: experimental
+description: >
+  An outbound tool call was refused because the run had already consumed a
+  result from a tool the deployed policy names an untrusted source (schema
+  1.4.0, taint tracking, D-031). The three reserved ids say what the gateway
+  SAW, not which strictness level the operator set: 'taint:secret-egress' - the
+  outbound arguments carried a known credential format; 'taint:new-domain-egress'
+  - the call named a host outside the deployment's post-taint allowlist;
+  'taint:egress' - the operator refuses ALL outbound calls after taint.
+  THIS IS NOT AN INJECTION DETECTION, and the wording above is deliberate.
+  Nothing inspected the consumed content: the run is marked on the SOURCE tool,
+  so an entirely benign page taints a run exactly as an attacker's page does,
+  and under egress_mode all_egress a bare `pwd` after one fetch lands here. Say
+  "refused an outbound call from a run that had read untrusted content", never
+  "blocked a prompt injection" - the event schema states this on the rule_id
+  field and this rule is the one that has to honour it.
+  Scope: PROXY ONLY. Taint is a property of a run and the Claude Code hook
+  holds no run (docs/LIMITATIONS.md, hook-door limits), so no 'PreToolUse'
+  event can ever carry a taint id. Absence of these events is therefore not
+  evidence of a clean run: the deployment may set no taint sources, may run
+  only the hook, or the run may simply never have called a source tool.
+references:
+  - https://genai.owasp.org/llmrisk/llm01-prompt-injection/
+  - https://raw.githubusercontent.com/ydarwish1/agent-chokepoint/main/telemetry/event-schema.json
+author: Agent-Chokepoint
+date: 2026-08-05
+logsource:
+  product: agent-chokepoint
+  service: decisions
+detection:
+  selection:
+    rule_id|startswith: 'taint:'
+  condition: selection
+fields:
+  - ts
+  - agent_id
+  - run_id
+  - server
+  - tool
+  - rule_id
+  - reason
+falsepositives:
+  - >
+    Ordinary research traffic under a strict egress_mode. The dial is the
+    operator's: under all_egress EVERY outbound call after the first source
+    fetch is refused, so a run that fetches a page and then fetches a second
+    one produces this event with nothing adversarial in it. Baseline the volume
+    per run_id against that deployment's configured mode - which is not on the
+    event, so ask the operator - before setting a threshold.
+  - >
+    A run tainted by a benign source. `taint.sources` names TOOLS, not content,
+    so a fetch of the deployment's own documentation marks the run. The first
+    taint event in a run says only that a source tool returned, not that
+    anything malicious was read.
+level: medium
+tags:
+  - owasp.llm01

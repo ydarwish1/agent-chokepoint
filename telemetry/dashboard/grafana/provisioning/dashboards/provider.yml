@@ -1,0 +1,15 @@
+# Loads every dashboard JSON in ../dashboards from disk. `allowUiUpdates: false`
+# is the point: the file in the repo is the dashboard, and a change made by
+# clicking in the browser cannot silently become the artifact.
+apiVersion: 1
+
+providers:
+  - name: agent-chokepoint
+    orgId: 1
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 10
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

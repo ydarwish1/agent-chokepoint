@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Agent-Chokepoint architecture</title>
+<style>
+  :root{
+    --bg:#070910;
+    --ink:#eef1fb;
+    --muted:#8a92b2;
+    --edge:#222840;
+    --accent:#39d3a4;
+    --allow:#39d3a4;
+    --ask:#f0b23a;
+    --block:#ef5f6b;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:var(--bg)}
+  .stage{
+    position:relative;width:1600px;height:980px;overflow:hidden;
+    background:
+      radial-gradient(760px 460px at 50% 51%, rgba(57,211,164,.085), transparent 72%),
+      linear-gradient(180deg,#0a0d18 0%, #070910 60%, #05070d 100%);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",Inter,Helvetica,Arial,sans-serif;
+    color:var(--ink);
+  }
+  svg.wires{position:absolute;inset:0;width:1600px;height:980px}
+
+  .h1{position:absolute;top:44px;left:0;width:1600px;text-align:center;
+      font-size:15px;font-weight:700;letter-spacing:.34em;color:#cfd6ee;text-transform:uppercase}
+  .h2{position:absolute;top:76px;left:0;width:1600px;text-align:center;
+      font-size:13.5px;letter-spacing:.045em;color:#767f9f}
+
+  .box{position:absolute;border-radius:14px;border:1px solid var(--edge);
+       background:linear-gradient(180deg,#141a2e,#0e1322);
+       box-shadow:0 12px 30px rgba(0,0,0,.5);padding:14px 18px}
+  .lab{font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:#6a7396;font-weight:700;margin-bottom:6px}
+  .ttl{font-size:17.5px;font-weight:650;line-height:1.2}
+  .sub{font-size:12.5px;color:var(--muted);margin-top:5px;line-height:1.45}
+
+  .tag{display:inline-block;font-size:10px;letter-spacing:.09em;text-transform:uppercase;
+       color:#7d8098;border:1px solid #2c3350;border-radius:6px;padding:2px 7px;margin-left:8px}
+
+  .gate{position:absolute;left:676px;top:402px;width:240px;height:200px;border-radius:18px;
+        border:1px solid rgba(57,211,164,.34);
+        background:linear-gradient(180deg,#0f1626,#080c15);
+        box-shadow:0 0 54px rgba(57,211,164,.15), inset 0 0 40px rgba(57,211,164,.055);
+        display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px}
+  .gate .glyph{width:54px;height:54px}
+  .gate .gname{font-size:16.5px;font-weight:650}
+  .gate .gsub{font-size:11.5px;color:#7e87a8;text-align:center;line-height:1.45}
+
+  .verdict{position:absolute;width:514px;border-radius:14px;border:1px solid var(--edge);
+           background:linear-gradient(180deg,#141a2e,#0e1322);
+           box-shadow:0 12px 30px rgba(0,0,0,.5);padding:13px 18px 15px 24px;overflow:hidden}
+  .verdict:before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px}
+  .vhead{display:flex;align-items:baseline;gap:12px}
+  .vname{font-size:15.5px;font-weight:750;letter-spacing:.12em;text-transform:uppercase}
+  .vwhat{font-size:15px;font-weight:600;color:#e9edfb}
+  .v-allow:before{background:var(--allow)} .v-allow .vname{color:var(--allow)}
+  .v-ask:before{background:var(--ask)}     .v-ask   .vname{color:var(--ask)}
+  .v-block:before{background:var(--block)} .v-block .vname{color:var(--block)}
+
+  .loopnote{position:absolute;top:914px;left:0;width:1600px;text-align:center;
+            font-size:12.5px;color:#7a83a4;letter-spacing:.02em}
+  .loopnote b{color:var(--accent);font-weight:650}
+</style>
+</head>
+<body>
+<div class="stage">
+
+  <div class="h1">Agent-Chokepoint</div>
+  <div class="h2">what happens to one tool call, from the agent to the tool</div>
+
+  <svg class="wires" viewBox="0 0 1600 980">
+    <defs>
+      <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+        <path d="M0 0 L10 5 L0 10 z" fill="#5a6486"/>
+      </marker>
+      <marker id="ar-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+        <path d="M0 0 L10 5 L0 10 z" fill="#39d3a4"/>
+      </marker>
+      <marker id="ar-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+        <path d="M0 0 L10 5 L0 10 z" fill="#f0b23a"/>
+      </marker>
+      <marker id="ar-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+        <path d="M0 0 L10 5 L0 10 z" fill="#ef5f6b"/>
+      </marker>
+    </defs>
+
+    <!-- the funnel: two doors, one waist -->
+    <path d="M608 366 L676 428 L676 576 L608 638 Z"
+          fill="rgba(57,211,164,.055)" stroke="rgba(57,211,164,.22)" stroke-width="1"/>
+
+    <!-- agent -> door -->
+    <g fill="none" stroke="#4d5677" stroke-width="1.6" marker-end="url(#ar)">
+      <path d="M312 450 H344"/>
+      <path d="M312 578 H344"/>
+    </g>
+
+    <!-- door -> gate, converging -->
+    <g fill="none" stroke="#4d5677" stroke-width="1.6" marker-end="url(#ar)">
+      <path d="M592 450 H606 Q626 450 626 470 V482 Q626 502 646 502 H668"/>
+      <path d="M592 578 H606 Q626 578 626 558 V522 Q626 502 646 502 H668"/>
+    </g>
+
+    <!-- policy in from above, run state in from below -->
+    <g fill="none" stroke="#4d5677" stroke-width="1.6" marker-end="url(#ar)" stroke-dasharray="6 5">
+      <path d="M796 254 V396"/>
+      <path d="M796 712 V608"/>
+    </g>
+
+    <!-- gate -> three verdicts -->
+    <path d="M916 502 H944 Q964 502 964 482 V392 Q964 372 984 372 H1000"
+          fill="none" stroke="#39d3a4" stroke-width="1.8" stroke-opacity=".85" marker-end="url(#ar-a)"/>
+    <path d="M916 502 H1000"
+          fill="none" stroke="#f0b23a" stroke-width="1.8" stroke-opacity=".85" marker-end="url(#ar-k)"/>
+    <path d="M916 502 H944 Q964 502 964 522 V612 Q964 632 984 632 H1000"
+          fill="none" stroke="#ef5f6b" stroke-width="1.8" stroke-opacity=".85" marker-end="url(#ar-b)"/>
+
+    <!-- every decision, whatever the verdict, writes one event -->
+    <path d="M860 602 V672 Q860 692 880 692 H1120 Q1140 692 1140 712 V742"
+          fill="none" stroke="#4d5677" stroke-width="1.6" stroke-dasharray="6 5" marker-end="url(#ar)"/>
+
+    <!-- taint: the loop back into run state -->
+    <path d="M1520 372 H1552 Q1568 372 1568 388 V856 Q1568 872 1552 872 H812 Q796 872 796 856 V794"
+          fill="none" stroke="#39d3a4" stroke-width="1.5" stroke-dasharray="7 6"
+          stroke-opacity=".55" marker-end="url(#ar-a)"/>
+  </svg>
+
+  <!-- policy -->
+  <div class="box" style="left:626px;top:158px;width:340px">
+    <div class="lab">the rules you wrote</div>
+    <div class="ttl">policy.yaml</div>
+    <div class="sub">Deny by default. A call matching nothing is blocked.</div>
+  </div>
+
+  <!-- agents -->
+  <div class="box" style="left:52px;top:406px;width:260px">
+    <div class="lab">agent</div>
+    <div class="ttl">Claude Code</div>
+    <div class="sub">Read, Write, Edit, Bash, WebFetch</div>
+  </div>
+  <div class="box" style="left:52px;top:534px;width:260px">
+    <div class="lab">agent</div>
+    <div class="ttl">Any MCP client</div>
+    <div class="sub">tools/call, tools/list</div>
+  </div>
+
+  <!-- doors -->
+  <div class="box" style="left:344px;top:406px;width:248px">
+    <div class="lab">door one</div>
+    <div class="ttl">PreToolUse hook</div>
+    <div class="sub">one process per call</div>
+  </div>
+  <div class="box" style="left:344px;top:534px;width:248px">
+    <div class="lab">door two</div>
+    <div class="ttl">MCP proxy</div>
+    <div class="sub">holds the whole session</div>
+  </div>
+
+  <!-- the gate -->
+  <div class="gate">
+    <svg class="glyph" viewBox="0 0 56 56" fill="none">
+      <path d="M7 9 V47" stroke="#39d3a4" stroke-width="2.4" stroke-linecap="round" stroke-opacity=".45"/>
+      <path d="M49 9 V47" stroke="#39d3a4" stroke-width="2.4" stroke-linecap="round" stroke-opacity=".45"/>
+      <path d="M14 28 H23" stroke="#39d3a4" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M33 28 H42" stroke="#39d3a4" stroke-width="2.4" stroke-linecap="round"/>
+      <circle cx="28" cy="28" r="4.8" fill="#39d3a4"/>
+      <path d="M18 16 H38 M18 40 H38" stroke="#39d3a4" stroke-width="2" stroke-linecap="round" stroke-opacity=".3"/>
+    </svg>
+    <div class="gname">decision engine</div>
+    <div class="gsub">a pure function<br>no network, no files, no state</div>
+  </div>
+
+  <!-- run state -->
+  <div class="box" style="left:650px;top:712px;width:292px">
+    <div class="lab">session memory <span class="tag">proxy only</span></div>
+    <div class="ttl">run state</div>
+    <div class="sub">taint mark, call caps, repeat caps</div>
+  </div>
+
+  <!-- verdicts -->
+  <div class="verdict v-allow" style="left:1006px;top:324px">
+    <div class="vhead"><span class="vname">allow</span><span class="vwhat">the call runs, untouched</span></div>
+    <div class="sub">It reaches the file, the shell, the host or the MCP server it named.</div>
+  </div>
+
+  <div class="verdict v-ask" style="left:1006px;top:454px">
+    <div class="vhead"><span class="vname">ask</span><span class="vwhat">a human decides</span></div>
+    <div class="sub">Claude Code raises its own permission prompt. The proxy has no approval channel wired, so there it fails closed and refuses.</div>
+  </div>
+
+  <div class="verdict v-block" style="left:1006px;top:584px">
+    <div class="vhead"><span class="vname">block</span><span class="vwhat">refused, and named</span></div>
+    <div class="sub">The error carries the id of the rule that refused it, so nobody has to guess why.</div>
+  </div>
+
+  <!-- audit -->
+  <div class="box" style="left:1006px;top:750px;width:514px">
+    <div class="lab">audit trail</div>
+    <div class="ttl">one event per decision</div>
+    <div class="sub">Published schema, Sigma detection rules, Grafana dashboard. An allow is logged as loudly as a block.</div>
+  </div>
+
+  <div class="loopnote">
+    <b>The loop that matters:</b> when a result comes back from a source the policy calls untrusted, the run is marked, and a call that was allowed a moment ago can be refused the next time it is made.
+  </div>
+
+</div>
+</body>
+</html>

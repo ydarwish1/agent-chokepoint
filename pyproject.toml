@@ -1,0 +1,74 @@
+# Dependency record + test configuration.
+# The mcp pin follows the 2026-08-02 SDK survey (D-002): 2.x is the live line,
+# 1.x is security-fixes-only; the proxy adapter is the part expected to churn,
+# so the pin stays inside 2.0.x-compatible minors.
+
+[project]
+name = "agent-chokepoint"
+version = "0.0.1.dev0"
+description = "MCP security gateway: allow/block/ask on every agent tool call"
+requires-python = ">=3.10"
+# SPDX string, not the `{ text = ... }` table: setuptools deprecated the table
+# form and stops building it after 2027-02-18 (B-027). The string
+# form is PEP 639, and the >=77 floor it needs is measured, not assumed - the
+# same tree built with setuptools pinned to 76.0.0 fails with "invalid
+# pyproject.toml config: `project.license`" and builds clean pinned to 77.0.3.
+# `pip download setuptools --python-version {3.10,3.14}` resolves 83.0.0 for
+# both CI matrix bounds, so build isolation is above that floor either way
+# (measured 2026-08-02). Metadata goes out as `License-Expression: Apache-2.0`.
+license = "Apache-2.0"
+dependencies = [
+    "mcp>=2.0,<2.1",
+    "PyYAML>=6",
+]
+
+# Setuptools will not guess among the repo's top-level directories - `deploy`
+# and `telemetry` are documents, not packages - so the real ones are named
+# explicitly. Without this, `pip install -e .` exits 1 with
+# "Multiple top-level packages discovered in a flat-layout", which is how CI
+# would have failed on its first run for a packaging reason rather than a code
+# one (measured on a clean `git archive HEAD` export, 2026-08-02).
+#
+# `pep` joined the list with D-011. It is not optional: both `proxy` and `hooks`
+# import it now, so a wheel built without it installs two enforcement points
+# whose first tool call raises ModuleNotFoundError. The failure would not show
+# up in this repo's own test run, where the source tree is on sys.path either
+# way - only in an install.
+[tool.setuptools]
+packages = ["engine", "policy", "proxy", "hooks", "pep"]
+
+# `jsonschema` and the Sigma tools are used by tests/test_telemetry_controls.py
+# only — they validate the published event schema and convert the shipped Sigma
+# rules with the reference implementation rather than a hand-rolled matcher.
+# They are NOT runtime dependencies: nothing under engine/, policy/, proxy/,
+# hooks/ or pep/ imports them, and the tests skip cleanly when they are absent.
+# CI installs them (see .github/workflows/) so those controls actually execute
+# there instead of skipping — a test that always skips in CI proves nothing in
+# CI. Resolution measured for both matrix bounds before adding: `pip download
+# --python-version 3.10 --only-binary=:all:` resolves the whole tree, 27 wheels,
+# exit 0 (2026-08-04).
+#
+# This table is the ONE list, and `.github/workflows/ci.yml` installs it by
+# reference with `pip install --group dev` (PEP 735). It did not until CP-11:
+# nothing in the repo passed `--group` at all, and CI re-typed the set across
+# two of its own steps instead — copies that had already drifted, with
+# jsonschema unpinned there against jsonschema>=4 here. A dependency group
+# nothing installs is decoration; a second copy of a list is a drift generator.
+# Adding a tool here is now enough to put it in CI, and there is no other place
+# to forget to add it.
+[dependency-groups]
+dev = ["pytest>=9", "jsonschema>=4", "sigma-cli>=1", "pysigma-backend-sqlite>=1"]
+
+[tool.pytest.ini_options]
+# `hooks` joined the list when the second enforcement point landed; without it a
+# bare `pytest` collects 0 of its tests and CI would run a suite that silently
+# skips the hook. `tests` joined the same way: it holds the repo-level checks
+# (docs currency, packaging metadata) that belong to no single package, and off
+# this list they would collect 0 while the suite still reported pass. It is
+# deliberately absent from `[tool.setuptools] packages` - it is not shipped.
+# `pep` joined with D-011, for the same reason `hooks` did: off this list its
+# tests collect 0 and the suite still reports pass, so the package that resolves
+# every path both doors judge would ship with an untested resolver and nothing
+# would say so.
+testpaths = ["engine", "policy", "proxy", "hooks", "pep", "tests"]
+addopts = "-q"

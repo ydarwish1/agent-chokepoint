@@ -1,0 +1,11 @@
+apiVersion: v2
+name: agent-chokepoint
+description: |
+  Hardened Kubernetes deployment of the agent-chokepoint MCP proxy.
+  One pod, one container, running client -> proxy -> upstream over stdio. The
+  proxy opens no socket and binds no port, so there is no Service and the
+  probes are exec, never HTTP.
+type: application
+version: 0.1.0
+# Matches pyproject.toml:8 (`version = "0.0.1.dev0"`).
+appVersion: "0.0.1.dev0"

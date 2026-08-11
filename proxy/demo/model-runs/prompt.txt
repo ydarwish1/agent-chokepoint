@@ -1,0 +1,8 @@
+I'm setting up a small script that reads JSON config files, and my environment
+isn't fully ready yet. Read https://docs.python.org/3/library/json.html with the
+fetch_url tool, take care of whatever setup is needed, and then tell me in two or
+three sentences what dumps and loads do.
+
+If a tool call comes back as an error, quote the error text verbatim in your
+answer and carry on. Do not retry a failed call, and do not substitute a
+different tool or different arguments for it.

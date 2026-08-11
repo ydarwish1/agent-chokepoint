@@ -1,0 +1,97 @@
+# ===========================================================================
+# agent-chokepoint - config-scan evidence
+# artifact  : D-020 command-resolution pinning evidence
+# ---------------------------------------------------------------------------
+# generated : 2026-08-03T16:58:02Z
+# host      : Darwin 24.2.0 arm64
+# repo      : <repo root>
+# repo HEAD : bc29ff561dc85f4850fabcb00601e5e2faea8459
+# tool      : v4.2.3+g43e8b7f + kubectl Client Version: v1.36.1 + awk/grep
+# command   :
+#     awk over 00-rendered-manifests.yaml: argv[0] of every command:/args: block
+#     /usr/bin/grep -a -n -B2 -A2 upstream_server.py 00-rendered-manifests.yaml
+#     /usr/bin/grep -a -n -A1 'name: PATH' 00-rendered-manifests.yaml
+#     /usr/local/bin/kubectl --context kind-chokepoint-phase3 exec -n chokepoint <pod> -- /bin/sh -c '<uid/PATH/writability probe>'
+# ---------------------------------------------------------------------------
+# The exit code and status of the command above are in the TRAILER at the
+# end of this file. Findings are DATA: a non-zero exit here means the
+# scanner reported something, not that the scan failed.
+# ===========================================================================
+
+############################################################################
+## 4a  UPSTREAM COMMAND AS RENDERED BY THE CHART
+##     D-020 control 1 of 2: the command is spelled as an ABSOLUTE path, so
+##     subprocess.py:1911-1912 takes the executable_list = (executable,)
+##     branch and performs no PATH search at all.
+############################################################################
+
+  argv[0] of every command:/args: list in the render, classified.
+  ABSOLUTE = resolved by the kernel. RELATIVE = resolved against PATH.
+
+  line 327    command   argv[0] = /usr/local/bin/python3                       ABSOLUTE
+  line 334    upstream  argv[0] = /usr/local/bin/python3                       ABSOLUTE
+  line 376    command   argv[0] = /usr/local/bin/python3                       ABSOLUTE
+  line 404    command   argv[0] = /usr/local/bin/python3                       ABSOLUTE
+
+  argv[0] positions parsed  : 4
+  RELATIVE (PATH-resolved)  : 0    <== D-020 requires 0
+  command/args not parsed   : 0    <== must be 0, else the YAML shape changed
+
+  --- every rendered line naming the upstream server, with context ---
+333-            - "--"
+334-            - "/usr/local/bin/python3"
+335:            - "/app/proxy/demo/upstream_server.py"
+336-            - "--sandbox"
+337-            - "/sandbox"
+
+  --- bare-name interpreter tokens anywhere in the render (expect none) ---
+  ZERO MATCHES (/usr/bin/grep -a) - no bare interpreter name is rendered.
+
+############################################################################
+## 4b  PATH ENV VALUE AS RENDERED BY THE CHART
+##     D-020 control 2 of 2. Dropping PATH does NOT fail closed:
+##     os.py:688-689 falls back to os.defpath (/bin:/usr/bin), so the
+##     value has to be set explicitly and has to be shown.
+############################################################################
+
+  339:            - name: PATH
+  340-              value: "/usr/local/bin:/usr/bin:/bin"
+
+  rendered PATH value : /usr/local/bin:/usr/bin:/bin
+  empty/relative PATH entry : none - every entry is an explicit directory
+
+############################################################################
+## 4c/4d  THE RUNNING POD - effective PATH, per-directory writability as the
+##        container's own uid, and the container's uid/gid.
+##
+##        A directory on PATH that the workload can WRITE re-opens B-035:
+##        the agent could plant a shim there and win the resolution race.
+##        Access is tested two ways - access(2) via test -w, and a real
+##        create attempt - because the second is the behaviour and the
+##        first is only the marker.
+############################################################################
+
+  pod: chokepoint-agent-chokepoint-c784894d6-wkqm6
+
+  --- the pod's container command as ADMITTED by the API server ---
+  (the render is what was asked for; this is what is actually running)
+  container=gateway
+  command=["/usr/local/bin/python3","/app/deploy/demo/gateway_driver.py","--policy","/etc/chokepoint/policy.yaml","--state-dir","/sandbox","--","/usr/local/bin/python3","/app/proxy/demo/upstream_server.py","--sandbox","/sandbox"]
+  env=[{"name":"PATH","value":"/usr/local/bin:/usr/bin:/bin"}]
+
+  --- probe run INSIDE the container, as the container's own uid ---
+container-id-line: uid=65532(nonroot) gid=65532(nonroot) groups=65532(nonroot)
+container-uid:     65532
+container-gid:     65532
+effective-PATH:    /usr/local/bin:/usr/bin:/bin
+
+per-directory writability:
+  exists=yes  test-w=no  create-probe=refused  dir=/usr/local/bin
+  exists=yes  test-w=no  create-probe=refused  dir=/usr/bin
+  exists=yes  test-w=no  create-probe=refused  dir=/bin
+
+# ===========================================================================
+# TRAILER
+# exit code : 0
+# status    : RAN
+# ===========================================================================

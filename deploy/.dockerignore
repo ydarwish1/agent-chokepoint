@@ -1,0 +1,42 @@
+# Build-context exclusions for deploy/Dockerfile.
+#
+# READ THIS BEFORE RELYING ON IT — measured 2026-08-03, docker 29.5.2, classic
+# builder (no buildx on this machine):
+#
+#   docker build -f deploy/Dockerfile ... <repo root>
+#
+# reads ONLY <context>/.dockerignore. A file at deploy/.dockerignore is NOT
+# consulted. Both legs were run with identical bytes: at deploy/ the excluded
+# directory landed in the image; at the context root it did not.
+#
+# So this file is documentation of intent, not an enforced control. The image is
+# kept clean structurally instead: deploy/Dockerfile enumerates its COPY lines
+# rather than using `COPY . /app`, and strips bytecode afterwards. To make these
+# patterns actually shrink the build context, copy this file to the repo root as
+# .dockerignore.
+#
+# Patterns are matched against the path relative to the context root and are not
+# recursive unless prefixed with **/ — hence the **/ forms below.
+# Kept consistent with .gitignore (byte-compiled files, .venv, caches,
+# findings/).
+
+.git
+.git/**
+.venv
+findings/
+__pycache__
+**/__pycache__
+*.pyc
+**/*.pyc
+*.pyo
+**/*.pyo
+.pytest_cache
+**/.pytest_cache
+.mypy_cache
+**/.mypy_cache
+.ruff_cache
+**/.ruff_cache
+build/
+dist/
+*.egg-info/
+.env

@@ -1,0 +1,108 @@
+# Fixture policy for the Claude Code hook tests.
+#
+# Deliberately NOT policy/policy.example.yaml. These tests assert the hook's
+# translation, verdict mapping and logging — pinning them to the shipped example
+# would make every future policy edit read as a hook regression, and the example
+# has its own tests in policy/tests/ that assert its predictions.
+#
+# Every path prefix is absolute: a pure engine cannot resolve a relative prefix
+# against a working directory it cannot see, and a relative prefix that silently
+# matches nothing is B-006.
+
+version: 0
+
+defaults:
+  decision: block
+  on_no_match: block
+
+limits:
+  # Present on purpose. The hook sends run_state=None, so decide() skips this
+  # whole block; the proxy is the enforcement point that counts calls.
+  max_tool_calls_per_run: 100
+  max_wall_clock_seconds: 900
+  max_repeated_identical_calls: 3
+
+rules:
+
+  - id: fs-read-scoped
+    owasp: LLM01
+    tool: read_file
+    decision: allow
+    when:
+      path_within: ["/workspace/"]
+      path_not_within: ["/workspace/.ssh/"]
+
+  - id: fs-write-scoped
+    owasp: LLM01
+    tool: write_file
+    decision: ask
+    when:
+      path_within: ["/workspace/"]
+
+  - id: fs-write-secret
+    owasp: LLM02
+    tool: write_file
+    decision: block
+    when:
+      args_match_any:
+        - secret_like
+        - private_key_block
+    note: >
+      Exists so the tests can prove the engine scans the WHOLE argument blob:
+      a credential past the log-truncation cutoff still blocks the call.
+
+  - id: net-fetch-allowlist
+    owasp: LLM01
+    tool: fetch_url
+    decision: allow
+    when:
+      domain_in:
+        - example.com
+
+  # Anchored per D-018. This pattern used to be `^ls\b`, which is `re.search`
+  # over the whole command string and therefore admitted every compound command
+  # that merely STARTED with `ls` — `ls -la; cat /etc/shadow` came back allow.
+  # The loader now refuses an unanchored `command_matches_any` pattern on an
+  # `allow` rule, so the file would not load at all with the old spelling. The
+  # unanchored shape is not deleted, it is demonstrated where a refusal can be
+  # asserted about it: policy/tests/test_loader.py::TestUnanchoredAllowCommandPatternIsRefused.
+  # `ls -la` still reaches this rule, which is what hooks/tests/test_hook.py reads.
+  - id: shell-listing
+    owasp: LLM01
+    tool: run_command
+    decision: allow
+    when:
+      command_matches_any:
+        - '\Als( +-[A-Za-z]+)*\Z'
+
+  - id: shell-destructive
+    owasp: LLM01
+    tool: run_command
+    decision: block
+    when:
+      command_matches_any:
+        - 'rm -rf'
+
+  # These two carry the MCP half of the hook's contract: an
+  # `mcp__<server>__<tool>` name is stripped to the bare tool and reaches its
+  # rule, and an `ask` comes back from a plugin-scoped server name.
+  #
+  # They used to be `echo_note` and `query` with no `when:` at all. D-012 refuses
+  # a rule with no predicates (it matches every call to its tool), and neither of
+  # those tools carries `path`, `url` or `command` — the only arguments the fixed
+  # vocabulary binds to — so no satisfiable predicate could be written for
+  # either. They are re-pointed at MCP tools that do carry a bound argument; the
+  # two properties the tests read from them are unchanged.
+  - id: mcp-note-read
+    owasp: LLM01
+    tool: read_note
+    decision: allow
+    when:
+      path_within: ["/workspace/notes/"]
+
+  - id: mcp-db-export
+    owasp: LLM01
+    tool: export_table
+    decision: ask
+    when:
+      path_within: ["/workspace/"]

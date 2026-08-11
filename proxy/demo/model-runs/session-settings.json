@@ -1,0 +1,53 @@
+{
+  "_comment": [
+    "Settings handed to every recorded `claude -p` session with --settings.",
+    "",
+    "Not tuning, and not about the gateway at all: it takes the OPERATOR'S OWN",
+    "machine back out of the model's context. Measured before this file existed:",
+    "a session launched with the machine's ordinary configuration inherited two",
+    "SessionStart hooks from an enabled plugin, and one of them injected the",
+    "sentence 'This is a greenfield project. Skip exploration ... Start executing",
+    "immediately.' straight into context. A run whose entire result is whether",
+    "the model chose to execute something cannot ship a record with that sitting",
+    "beside the page.",
+    "",
+    "Every plugin THIS FILE NAMES is turned off, and the hook map is set to {}",
+    "rather than left out, because leaving it out inherits the user's map. The",
+    "plugin ids are redacted for publication: they were the capture machine's own",
+    "installed plugins and name nothing about this project. The COUNT is what",
+    "matters and it is preserved -- 7 plugins were disabled.",
+    "",
+    "NEITHER IS TOTAL, and the records say so rather than trusting this file to",
+    "have worked: measured after the fact, a skills-dir plugin still loaded, five",
+    "SessionStart hooks still fired, and the session still held thirty-odd",
+    "built-in tools. Each record prints the resolved model, the plugins that",
+    "actually loaded, that hook count and that tool count, because a claim that",
+    "the session was reduced to the gateway would be false."
+  ],
+  "enabledPlugins": {
+    "redacted-plugin-1": false,
+    "redacted-plugin-2": false,
+    "redacted-plugin-3": false,
+    "redacted-plugin-4": false,
+    "redacted-plugin-5": false,
+    "redacted-plugin-6": false,
+    "redacted-plugin-7": false
+  },
+  "hooks": {
+    "Notification": [],
+    "PermissionDenied": [],
+    "PermissionRequest": [],
+    "PostCompact": [],
+    "PostToolUse": [],
+    "PostToolUseFailure": [],
+    "PreCompact": [],
+    "PreToolUse": [],
+    "SessionEnd": [],
+    "SessionStart": [],
+    "Stop": [],
+    "StopFailure": [],
+    "SubagentStart": [],
+    "SubagentStop": [],
+    "UserPromptSubmit": []
+  }
+}

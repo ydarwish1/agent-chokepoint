@@ -1,0 +1,588 @@
+# Runs the test suite on every push and pull request, and gates deploy/.
+#
+# Matrix bounds: 3.10 is the floor pyproject.toml declares; 3.14 is the newest
+# stable minor setup-python offers. Both are quoted - unquoted 3.10 is the YAML
+# float 3.1. fail-fast is off so a failure at one bound still reports the other.
+
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install --upgrade pip
+      - run: pip install -e .
+      # Test-only tools, installed BY REFERENCE from the [dependency-groups] dev
+      # table in pyproject.toml rather than re-typed here (CP-11): a second copy
+      # of a list is a drift generator. `--group` is PEP 735 and needs pip 25.1
+      # or newer, which the upgrade step above supplies. What it buys:
+      # tests/test_telemetry_controls.py runs instead of skipping, so the event
+      # schema and the shipped Sigma rules are checked by their reference
+      # implementations. A control that always skips in CI is not a control.
+      - run: pip install --group dev
+
+      # The guard for the line above: every distribution the dev group names
+      # must arrive by reference and appear on no pip install line here, read
+      # out of pyproject.toml and this workflow rather than restated. Comments
+      # are stripped before the scan - this file's own prose names all four
+      # distributions - and the presence check is anchored to a `run:` line for
+      # the same reason.
+      - name: The dev tool set is installed by reference, not re-typed
+        run: |
+          set +e
+          set -u
+          bad=""
+          src=".github/workflows/ci.yml"
+          stripped="${RUNNER_TEMP}/ci-no-comments.yml"
+          /usr/bin/sed -e 's/^[[:space:]]*#.*$//' "$src" > "$stripped"
+
+          /usr/bin/grep -q -a -E \
+              -e '^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]*pip[[:space:]]+install[[:space:]]+--group[[:space:]]+dev[[:space:]]*$' \
+              "$stripped"
+          if [ $? -ne 0 ]; then
+              echo "FAIL: no 'run: pip install --group dev' step in ${src}."
+              echo "      The dev group would then install nowhere, and"
+              echo "      tests/test_telemetry_controls.py would skip in CI."
+              bad="yes"
+          else
+              echo "pass: the dev group is installed by reference"
+          fi
+
+          # The dev list, from the one place it may live.
+          devraw="$(/usr/bin/sed -n -e 's/^dev[[:space:]]*=//p' pyproject.toml)"
+          case "$devraw" in
+              *"]"*) : ;;
+              *)
+                  echo "FAIL: [dependency-groups] dev is absent from pyproject.toml,"
+                  echo "      or spans more than the one line this check reads."
+                  echo "      Either way the scan below would check nothing, and a"
+                  echo "      check that could not run must not report clean."
+                  bad="yes" ;;
+          esac
+          names="$(printf '%s\n' "$devraw" \
+              | /usr/bin/sed -e 's/[][",]/ /g' \
+              | /usr/bin/tr ' ' '\n' \
+              | /usr/bin/sed -e 's/[<>=!~;].*$//' \
+              | /usr/bin/grep -a -E -e '^[A-Za-z0-9._-]+$')"
+
+          for n in $names; do
+              hits="${RUNNER_TEMP}/retyped-${n}"
+              /usr/bin/grep -a -n -E \
+                  -e "pip[[:space:]]+install[[:space:]](.*[[:space:]])?${n}([[:space:]<>=!~,]|$)" \
+                  "$stripped" > "$hits"
+              rc=$?
+              if [ "$rc" -gt 1 ]; then
+                  echo "FAIL: the re-typed-copy scan could not run for ${n} (grep rc=${rc})."
+                  bad="yes"
+              elif [ "$rc" -eq 0 ]; then
+                  echo "FAIL: ${n} is named on a pip install line in ${src}:"
+                  /usr/bin/sed -e 's/^/      /' "$hits"
+                  echo "      It belongs in [dependency-groups] dev and nowhere else."
+                  bad="yes"
+              else
+                  echo "pass: ${n} is not re-typed here"
+              fi
+          done
+
+          if [ -n "$bad" ]; then
+              echo "CP-11 guard: FAIL"
+              exit 1
+          fi
+          echo "CP-11 guard: PASS"
+
+      - run: pytest
+
+  # deploy/ had no executed gate before this job (CP-10): the chart's
+  # securityContext, the NetworkPolicy, the D-020 command pinning and the
+  # Dockerfile's non-root design could all drift with the signal staying green.
+  #
+  # This job needs NO cluster, so run-scans.sh cannot be the gate here: it
+  # treats a missing kube-score/trivy/kubectl as fatal and its 4c/4d sections
+  # read a Running pod, so on a bare runner it exits 2 for the environment
+  # rather than for the chart. The checks below are that script's cluster-free
+  # ones - 4a, 4b, 5.4 - carrying its patterns and its "grep rc >1 means the
+  # check COULD NOT RUN" rule unchanged. Its scanner sections stay out (findings
+  # are data, not a verdict) and 4c/4d stay there, needing a pod.
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # docker and helm come from the runner image. If either stops being
+      # preinstalled, this names it rather than letting the gate below go red
+      # in a way that reads like a chart defect.
+      - name: Tool versions
+        run: |
+          docker --version
+          helm version --short
+
+      # Executes the Dockerfile, which nothing else in CI does: a base-image
+      # move, a COPY list that stops matching the tree, or a useradd that stops
+      # resolving under the narrow build-time PATH all land silently otherwise.
+      # The tag is the one run-scans.sh scans.
+      - name: Build the gateway image
+        run: docker build -f deploy/Dockerfile -t agent-chokepoint:ci .
+
+      # deploy/README.md, "Non-root" - run-scans.sh 4d without the pod. A
+      # chart-only runAsUser over an image that defaults to root is one deleted
+      # runAsNonRoot away from a root container.
+      - name: The image runs as a non-root uid
+        run: |
+          user="$(docker image inspect --format '{{.Config.User}}' agent-chokepoint:ci)"
+          echo "image USER = ${user:-<unset>}"
+          case "$user" in
+              ""|root|root:*|0|0:*)
+                  echo "FAIL: deploy/Dockerfile leaves the image running as root."
+                  exit 1 ;;
+          esac
+          echo "pass: the image's configured user is ${user}"
+
+      # Renders the chart three ways: the shipped values plus the two guard-off
+      # controls the chart ships. Three more (D, E, F) mutate the shipped render
+      # in place, for the checks no values file can disable. A check that has
+      # never been seen to fail is not known to be a check.
+      - name: Render the chart and gate on it
+        run: |
+          # errexit OFF, explicitly, because GitHub Actions turns it ON: no
+          # `shell:` or `defaults:` key exists in this file, so every `run:`
+          # body executes under `bash -e {0}`, and `shell: bash` would give
+          # `-eo pipefail`, still -e. This script's control flow IS exit-status
+          # inspection - grep_into returns grep's own code, and rc=1 "no match"
+          # is the PASS path of require_absent and the FAIL path of
+          # require_present - so under -e the first such call kills the shell
+          # mid-report (measured: exit 1, no check lines) and render()'s
+          # diagnostic below is unreachable.
+          set +e
+          set -u
+
+          # Guard-off control for the line above: if `set +e` is ever dropped
+          # this names the shell, instead of a truncated log and an exit 1 that
+          # looks like the chart's fault. Verified to fire.
+          case "$-" in
+              *e*)
+                  echo "FAIL: errexit is on. This gate inspects exit codes"
+                  echo "      (grep rc=1 is a PASS path) and cannot run under -e."
+                  exit 1 ;;
+          esac
+
+          R="${RUNNER_TEMP}/renders"
+          TMP="${RUNNER_TEMP}/gate"
+          mkdir -p "$R" "$TMP"
+
+          render() {  # $1 = output file, $2... = extra helm args
+              local out="$1"; shift
+              helm template chokepoint deploy/chart --namespace chokepoint "$@" \
+                  > "$out" 2> "$TMP/helm.err"
+              local rc=$?
+              if [ "$rc" -ne 0 ]; then
+                  echo "helm template exited ${rc}; the chart did not render:"
+                  sed -e 's/^/    /' "$TMP/helm.err"
+                  exit 1
+              fi
+          }
+          render "$R/default.yaml"
+          render "$R/unpinned.yaml"  -f deploy/chart/values-unpinned-path.yaml
+          render "$R/no-netpol.yaml" -f deploy/chart/values-no-networkpolicy.yaml
+
+          RENDER=""
+          FAILED=""
+
+          # grep rc >1 is "the check could not run", NOT "no match". Swallowing
+          # that once made a structurally broken check read as a clean render.
+          # Every pattern goes in after -e for the same reason: one beginning
+          # with a dash is otherwise parsed as options, and grep exits 2 having
+          # matched nothing.
+          grep_into() {  # $1 = output file, $2... = grep args
+              local out="$1"; shift
+              /usr/bin/grep -a -n -E "$@" "$RENDER" > "$out" 2> "${out}.err"
+              return $?
+          }
+
+          require_absent() {  # id label pattern
+              local id="$1" label="$2" pat="$3" rc
+              grep_into "$TMP/$id" -e "$pat"
+              rc=$?
+              if [ "$rc" -gt 1 ]; then
+                  echo "    ${label}: CHECK COULD NOT RUN (grep rc=${rc})"
+                  sed -e 's/^/      /' "$TMP/${id}.err"
+                  FAILED="$FAILED ${id}-CHECK-BROKEN"
+              elif [ "$rc" -eq 0 ]; then
+                  echo "    ${label}: FAIL - present, and must not be:"
+                  sed -e 's/^/      /' "$TMP/$id"
+                  FAILED="$FAILED ${id}"
+              else
+                  echo "    ${label}: pass (zero matches, /usr/bin/grep -a)"
+              fi
+          }
+
+          require_present() {  # id label pattern
+              local id="$1" label="$2" pat="$3" rc
+              grep_into "$TMP/$id" -e "$pat"
+              rc=$?
+              if [ "$rc" -gt 1 ]; then
+                  echo "    ${label}: CHECK COULD NOT RUN (grep rc=${rc})"
+                  sed -e 's/^/      /' "$TMP/${id}.err"
+                  FAILED="$FAILED ${id}-CHECK-BROKEN"
+              elif [ "$rc" -eq 0 ]; then
+                  echo "    ${label}: pass ($(wc -l < "$TMP/$id" | tr -d ' ') line(s))"
+              else
+                  echo "    ${label}: FAIL - absent from the render"
+                  FAILED="$FAILED ${id}"
+              fi
+          }
+
+          # A key whose value sits on one of the NEXT lines. Anchoring the value
+          # to its key is the difference between "the render says drop: ALL" and
+          # "the render has an ALL somewhere in it"; the second is a false pass.
+          # Measured against mutated renders, a whole-file check passed an
+          # Egress moved out of policyTypes, a runAsNonRoot flipped to false
+          # under a pod-level true, and a container with no securityContext.
+          # The window widens for a list value.
+          require_pair() {  # id label keypat valuepat [lines-after=1]
+              local id="$1" label="$2" keypat="$3" valpat="$4" after="${5:-1}" rc n
+              grep_into "$TMP/$id" -A"$after" -e "$keypat"
+              rc=$?
+              if [ "$rc" -gt 1 ]; then
+                  echo "    ${label}: CHECK COULD NOT RUN (grep rc=${rc})"
+                  sed -e 's/^/      /' "$TMP/${id}.err"
+                  FAILED="$FAILED ${id}-CHECK-BROKEN"
+                  return
+              fi
+              if [ "$rc" -eq 1 ]; then
+                  echo "    ${label}: FAIL - the key is absent from the render"
+                  FAILED="$FAILED ${id}"
+                  return
+              fi
+              n="$(/usr/bin/grep -a -c -E -e "$valpat" "$TMP/$id")"
+              if [ "${n:-0}" -eq 0 ]; then
+                  echo "    ${label}: FAIL - key present, expected value not on the next line:"
+                  sed -e 's/^/      /' "$TMP/$id"
+                  FAILED="$FAILED ${id}"
+              else
+                  echo "    ${label}: pass (${n} match(es))"
+              fi
+          }
+
+          # Presence is not universality. A container securityContext OVERRIDES
+          # the pod one, so a container-level runAsNonRoot: false under a
+          # pod-level true may run as root while a whole-file grep for
+          # `runAsNonRoot: true` still finds the pod's line and passes; a second
+          # container with no securityContext passes the same way. Both measured.
+          #
+          # So this walks structure, not text: each `containers:` and
+          # `initContainers:` list, the indent of its first item as the item
+          # indent, and every `securityContext:` block at item-indent + 2
+          # attributed to the container it sits in. EVERY container must carry
+          # the three hardening keys deploy/README.md claims; a container the
+          # parser cannot see fails, and zero parsed containers fails too, so a
+          # render this cannot read never reports clean. It also flags any
+          # securityContext block lacking runAsNonRoot: true, covering the pod
+          # level.
+          #
+          # awk, not a YAML parser, because this job installs nothing. Written
+          # for mawk (/usr/bin/awk on the runner): no character classes, no
+          # gensub, no length() on an array.
+          require_hardened_containers() {  # id label
+              local id="$1" label="$2" rc n
+              /usr/bin/awk '
+                  function pad(s,   t) { t = s; sub(/[^ ].*$/, "", t); return length(t) }
+                  function close_sc() {
+                      if (sc < 0) return
+                      nblocks++
+                      if (!sc_nonroot) {
+                          printf "MISSING securityContext opened at line %d: runAsNonRoot: true\n", sc_line
+                      }
+                      if (owner > 0) {
+                          c_seen[owner] = 1
+                          c_nonroot[owner] = sc_nonroot
+                          c_rofs[owner] = sc_rofs
+                          c_caps[owner] = sc_caps
+                      }
+                      sc = -1; owner = 0; drop = -1
+                  }
+                  BEGIN { clist = -1; item = -1; sc = -1; drop = -1; ncont = 0; nblocks = 0 }
+                  /^[ ]*$/ { next }
+                  /^[ ]*#/ { next }
+                  {
+                      ind = pad($0)
+                      if (sc >= 0 && ind <= sc) close_sc()
+                      if (clist >= 0 && ind <= clist) { clist = -1; item = -1 }
+                      if ($0 ~ /^[ ]*(init)?[Cc]ontainers:[ ]*$/) { clist = ind; item = -1; next }
+                      if (clist >= 0 && $0 ~ /^[ ]*-[ ]/) {
+                          if (item < 0) item = ind
+                          if (ind == item) {
+                              ncont++
+                              nm = $0
+                              sub(/^[ ]*-[ ]*/, "", nm)
+                              if (nm ~ /^name:[ ]*/) { sub(/^name:[ ]*/, "", nm) } else { nm = "(unnamed)" }
+                              cname[ncont] = nm
+                              next
+                          }
+                      }
+                      if ($0 ~ /^[ ]*securityContext:[ ]*$/) {
+                          sc = ind; sc_line = NR
+                          sc_nonroot = 0; sc_rofs = 0; sc_caps = 0; drop = -1
+                          owner = 0
+                          if (clist >= 0 && item >= 0 && ind == item + 2) owner = ncont
+                          next
+                      }
+                      if (sc >= 0 && ind > sc) {
+                          if (drop >= 0 && ind <= drop) drop = -1
+                          if ($0 ~ /^[ ]*runAsNonRoot:[ ]*true[ ]*$/) sc_nonroot = 1
+                          if ($0 ~ /^[ ]*readOnlyRootFilesystem:[ ]*true[ ]*$/) sc_rofs = 1
+                          if ($0 ~ /^[ ]*drop:[ ]*$/) { drop = ind }
+                          else if (drop >= 0 && $0 ~ /^[ ]*-[ ]*ALL[ ]*$/) { sc_caps = 1 }
+                      }
+                  }
+                  END {
+                      close_sc()
+                      printf "containers parsed: %d; securityContext blocks: %d\n", ncont, nblocks
+                      if (ncont < 1) {
+                          print "MISSING containers: no container entry this parser can read"
+                      }
+                      for (i = 1; i <= ncont; i++) {
+                          m = ""
+                          if (!c_seen[i]) m = m " securityContext"
+                          if (!c_nonroot[i]) m = m " runAsNonRoot:true"
+                          if (!c_rofs[i]) m = m " readOnlyRootFilesystem:true"
+                          if (!c_caps[i]) m = m " capabilities.drop:[ALL]"
+                          if (m == "") { printf "ok container %s: hardened\n", cname[i] }
+                          else { printf "MISSING container %s:%s\n", cname[i], m }
+                      }
+                  }
+              ' "$RENDER" > "$TMP/$id" 2> "$TMP/${id}.err"
+              rc=$?
+              if [ "$rc" -ne 0 ]; then
+                  echo "    ${label}: CHECK COULD NOT RUN (awk rc=${rc})"
+                  sed -e 's/^/      /' "$TMP/${id}.err"
+                  FAILED="$FAILED ${id}-CHECK-BROKEN"
+                  return
+              fi
+              n="$(/usr/bin/grep -a -c -E -e '^MISSING ' "$TMP/$id")"
+              if [ "${n:-0}" -eq 0 ]; then
+                  echo "    ${label}: pass"
+              else
+                  echo "    ${label}: FAIL - ${n} hardening gap(s):"
+                  FAILED="$FAILED ${id}"
+              fi
+              sed -e 's/^/      /' "$TMP/$id"
+          }
+
+          ENV_NAME_PATH='^[[:space:]]*-?[[:space:]]*name:[[:space:]]*"?PATH"?[[:space:]]*$'
+
+          probe() {  # $1 = rendered manifest file
+              local rc pathv n
+              RENDER="$1"
+              FAILED=""
+              echo "  render: $(basename "$RENDER")"
+
+              # run-scans.sh 4a. A bare interpreter name is resolved against
+              # PATH, which is the whole of B-035; an absolute argv[0] takes
+              # CPython's executable_list = (executable,) branch and searches
+              # nothing.
+              require_absent D020-ARGV "D-020 4a  no bare interpreter argv[0]" \
+                  '^[[:space:]]*-[[:space:]]*"?(python|python3|sh|bash|env)"?[[:space:]]*$'
+
+              # run-scans.sh 4b. PATH has to be set explicitly - dropping it
+              # does not fail closed, CPython falls back to os.defpath - and no
+              # entry may be empty or ".", either of which puts the working
+              # directory on PATH.
+              grep_into "$TMP/D020-PATH" -A1 -e "$ENV_NAME_PATH"
+              rc=$?
+              if [ "$rc" -gt 1 ]; then
+                  echo "    D-020 4b  explicit PATH env: CHECK COULD NOT RUN (grep rc=${rc})"
+                  sed -e 's/^/      /' "$TMP/D020-PATH.err"
+                  FAILED="$FAILED D020-PATH-CHECK-BROKEN"
+              elif [ "$rc" -eq 1 ]; then
+                  echo "    D-020 4b  explicit PATH env: FAIL - the chart renders no PATH env"
+                  FAILED="$FAILED D020-PATH"
+              else
+                  pathv="$(/usr/bin/grep -a -m1 -E -e '^[0-9]+[-:][[:space:]]*value:' "$TMP/D020-PATH" \
+                      | sed -e 's/^[0-9]*[-:][[:space:]]*value:[[:space:]]*//' -e 's/^"//' -e 's/"$//')"
+                  if [ -z "$pathv" ]; then
+                      echo "    D-020 4b  explicit PATH env: FAIL - name: PATH carries no literal value:"
+                      sed -e 's/^/      /' "$TMP/D020-PATH"
+                      FAILED="$FAILED D020-PATH-VALUE"
+                  else
+                      case ":${pathv}:" in
+                          *::*|*:.:*)
+                              echo "    D-020 4b  explicit PATH env: FAIL - empty/relative entry in ${pathv}"
+                              FAILED="$FAILED D020-PATH-ENTRY" ;;
+                          *)
+                              echo "    D-020 4b  explicit PATH env: pass (PATH=${pathv})" ;;
+                      esac
+                  fi
+              fi
+
+              # run-scans.sh 5.4, "never env-inline": a secret-ish env NAME
+              # whose next line is a literal `value:`. A `valueFrom:` is a
+              # reference, not a finding.
+              grep_into "$TMP/SECRET-INLINE" -A1 \
+                  -e '^[[:space:]]*-?[[:space:]]*name:[[:space:]]*"?[A-Za-z0-9_]*([Pp][Aa][Ss][Ss]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Kk][Ee][Yy]|[Cc][Rr][Ee][Dd])[A-Za-z0-9_]*"?[[:space:]]*$'
+              rc=$?
+              if [ "$rc" -gt 1 ]; then
+                  echo "    spec 4.4  no env-inline secret: CHECK COULD NOT RUN (grep rc=${rc})"
+                  sed -e 's/^/      /' "$TMP/SECRET-INLINE.err"
+                  FAILED="$FAILED SECRET-INLINE-CHECK-BROKEN"
+              else
+                  n="$(/usr/bin/grep -a -c -E -e '^[0-9]+-[[:space:]]*value:' "$TMP/SECRET-INLINE")"
+                  if [ "${n:-0}" -eq 0 ]; then
+                      echo "    spec 4.4  no env-inline secret: pass (zero matches)"
+                  else
+                      echo "    spec 4.4  no env-inline secret: FAIL - ${n} inline value(s):"
+                      sed -e 's/^/      /' "$TMP/SECRET-INLINE"
+                      FAILED="$FAILED SECRET-INLINE"
+                  fi
+              fi
+
+              # deploy/README.md - NetworkPolicy with default-deny egress. The
+              # object is a whole-file question; the Egress entry is a value and
+              # is anchored to its key. 4 lines of context is headroom for a
+              # third policyTypes item: -A4 stops at the `---` separator.
+              require_present NETPOL "README:8  NetworkPolicy object" \
+                  '^kind:[[:space:]]*NetworkPolicy[[:space:]]*$'
+              require_pair NETPOL-EGRESS "README:8  Egress in policyTypes" \
+                  '^[[:space:]]*policyTypes:[[:space:]]*$' \
+                  '^[0-9]+[-:][[:space:]]*-[[:space:]]*Egress[[:space:]]*$' 4
+
+              # deploy/README.md - non-root, read-only root filesystem, dropped
+              # capabilities, asked per container rather than per file: it fails
+              # every render three whole-file greps failed, and some they passed.
+              require_hardened_containers SEC-CONTAINERS \
+                  "README:6  every container: runAsNonRoot, read-only root fs, drop ALL"
+          }
+
+          fired() {  # $1 = the check id this guard-off control must trip
+              case " $FAILED " in
+                  *" $1 "*) echo "  control fired as intended: $1"; return 0 ;;
+                  *) return 1 ;;
+              esac
+          }
+
+          rc=0
+
+          echo "A. shipped values - every check must pass"
+          probe "$R/default.yaml"
+          if [ -n "$FAILED" ]; then
+              echo "GATE FAILED on the shipped values:${FAILED}"
+              rc=1
+          fi
+
+          echo ""
+          echo "B. guard-off control: values-unpinned-path.yaml flips ONLY argv[0]"
+          probe "$R/unpinned.yaml"
+          if ! fired D020-ARGV; then
+              echo "GATE FAILED: the D-020 argv check did not fire on the guard-off render."
+              echo "             A check that cannot fail is not a check. FAILED=${FAILED}"
+              rc=1
+          fi
+
+          echo ""
+          echo "C. guard-off control: values-no-networkpolicy.yaml removes ONLY the policy"
+          probe "$R/no-netpol.yaml"
+          if ! fired NETPOL; then
+              echo "GATE FAILED: the NetworkPolicy check did not fire on the guard-off render."
+              echo "             A check that cannot fail is not a check. FAILED=${FAILED}"
+              rc=1
+          fi
+
+          # D, E and F are B and C's idea for the checks the chart ships no
+          # guard-off values file for. The hardening is HARDCODED on purpose
+          # (deploy/chart/templates/deployment.yaml), so no values file can
+          # drift it and the anchored checks above would otherwise never be seen
+          # to fail; the drift they guard against is an edit to the template, so
+          # the control mutates the RENDER instead - the three shapes a
+          # whole-file check passed, rebuilt with grep and awk. These are
+          # controls on the CHECKS: a red here means a check stopped being able
+          # to fail. Each proves its mutation LANDED first, so a no-op cannot
+          # read as a broken check.
+          mutated() {  # $1 = mutant file, $2 = pattern it must now contain, $3 = label
+              local n
+              n="$(/usr/bin/grep -a -c -E -e "$2" "$1")"
+              if [ "${n:-0}" -eq 0 ]; then
+                  echo "GATE FAILED: control ${3}'s mutation did not apply to the render, so"
+                  echo "             the control proves nothing about the check."
+                  return 1
+              fi
+              return 0
+          }
+
+          echo ""
+          echo "D. mutated-render control: the shipped render with an unhardened second container"
+          /usr/bin/awk '
+              { print }
+              /^[ ]*containers:[ ]*$/ {
+                  p = $0; sub(/[^ ].*$/, "", p)
+                  printf "%s  - name: drifted-sidecar\n", p
+                  printf "%s    image: busybox\n", p
+              }
+          ' "$R/default.yaml" > "$R/mutant-sidecar.yaml"
+          if ! mutated "$R/mutant-sidecar.yaml" \
+              '^[[:space:]]*-[[:space:]]*name:[[:space:]]*drifted-sidecar[[:space:]]*$' D; then
+              rc=1
+          fi
+          probe "$R/mutant-sidecar.yaml"
+          if ! fired SEC-CONTAINERS; then
+              echo "GATE FAILED: a container with no securityContext did not trip SEC-CONTAINERS."
+              echo "             The check has gone back to reading the file instead of the"
+              echo "             containers in it. FAILED=${FAILED}"
+              rc=1
+          fi
+
+          echo ""
+          echo "E. mutated-render control: container-level runAsNonRoot flipped to false"
+          # Only the container securityContext renders this key deeper than the
+          # pod's, so the indent picks it out; the pod-level true is left alone,
+          # which is the point - that is the line a whole-file grep passes on.
+          /usr/bin/sed -e 's/^\([[:space:]]\{12,\}\)runAsNonRoot:[[:space:]]*true[[:space:]]*$/\1runAsNonRoot: false/' \
+              "$R/default.yaml" > "$R/mutant-nonroot.yaml"
+          if ! mutated "$R/mutant-nonroot.yaml" \
+              '^[[:space:]]*runAsNonRoot:[[:space:]]*false[[:space:]]*$' E; then
+              rc=1
+          fi
+          probe "$R/mutant-nonroot.yaml"
+          if ! fired SEC-CONTAINERS; then
+              echo "GATE FAILED: a container running as root under a compliant pod securityContext"
+              echo "             did not trip SEC-CONTAINERS. FAILED=${FAILED}"
+              rc=1
+          fi
+
+          echo ""
+          echo "F. mutated-render control: Egress moved out of policyTypes"
+          /usr/bin/grep -a -v -E -e '^[[:space:]]*-[[:space:]]*Egress[[:space:]]*$' \
+              "$R/default.yaml" > "$R/mutant-egress.yaml"
+          printf '    - Egress\n' >> "$R/mutant-egress.yaml"
+          # F's mutation is a DELETION plus one appended stray, so what it has
+          # to land is a count, not a pattern: exactly one Egress entry left.
+          # Two would mean the delete missed and the check below would be
+          # reading the real policyTypes entry.
+          n="$(/usr/bin/grep -a -c -E -e '^[[:space:]]*-[[:space:]]*Egress[[:space:]]*$' "$R/mutant-egress.yaml")"
+          if [ "${n:-0}" -ne 1 ]; then
+              echo "GATE FAILED: control F left ${n} Egress entries where it intends 1, so"
+              echo "             the control proves nothing about the check."
+              rc=1
+          fi
+          probe "$R/mutant-egress.yaml"
+          if ! fired NETPOL-EGRESS; then
+              echo "GATE FAILED: an Egress entry outside policyTypes satisfied NETPOL-EGRESS."
+              echo "             The check is reading the file, not the policy. FAILED=${FAILED}"
+              rc=1
+          fi
+
+          echo ""
+          if [ "$rc" -eq 0 ]; then
+              echo "deploy gate: PASS - shipped values clean, all five controls fired."
+          else
+              echo "deploy gate: FAIL"
+          fi
+          exit "$rc"

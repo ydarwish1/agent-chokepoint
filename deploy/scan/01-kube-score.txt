@@ -1,0 +1,41 @@
+# ===========================================================================
+# agent-chokepoint - config-scan evidence
+# artifact  : kube-score over the rendered chart
+# ---------------------------------------------------------------------------
+# generated : 2026-08-03T16:58:02Z
+# host      : Darwin 24.2.0 arm64
+# repo      : <repo root>
+# repo HEAD : bc29ff561dc85f4850fabcb00601e5e2faea8459
+# tool      : kube-score version: 1.20.0, commit: 81371e9f53b633bec69423fc298295bd71bd869a, built: 2025-04-28T16:51:04Z
+# command   :
+#     /opt/homebrew/bin/helm template chokepoint <repo root>/deploy/chart --namespace chokepoint > 00-rendered-manifests.yaml
+#     /opt/homebrew/bin/kube-score score - --color never < 00-rendered-manifests.yaml
+# ---------------------------------------------------------------------------
+# The exit code and status of the command above are in the TRAILER at the
+# end of this file. Findings are DATA: a non-zero exit here means the
+# scanner reported something, not that the scan failed.
+# ===========================================================================
+
+apps/v1/Deployment chokepoint-agent-chokepoint                                💥
+    path=agent-chokepoint/templates/deployment.yaml
+    [CRITICAL] Container Ephemeral Storage Request and Limit
+        · gateway -> Ephemeral Storage limit is not set
+            Resource limits are recommended to avoid resource DDOS. Set
+            resources.limits.ephemeral-storage
+        · gateway -> Ephemeral Storage request is not set
+            Resource requests are recommended to make sure the application can
+            start and run without crashing. Set
+            resource.requests.ephemeral-storage
+    [CRITICAL] Container Image Pull Policy
+        · gateway -> ImagePullPolicy is not set to Always
+            It's recommended to always set the ImagePullPolicy to Always, to
+            make sure that the imagePullSecrets are always correct, and to
+            always get the image you want.
+networking.k8s.io/v1/NetworkPolicy chokepoint-agent-chokepoint                ✅
+
+# ===========================================================================
+# TRAILER
+# exit code : 1
+# status    : RAN
+# note      : non-zero exit = kube-score reported findings (expected; see the report above)
+# ===========================================================================

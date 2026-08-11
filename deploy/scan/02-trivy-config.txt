@@ -1,0 +1,64 @@
+# ===========================================================================
+# agent-chokepoint - config-scan evidence
+# artifact  : trivy misconfiguration scan over the rendered manifests
+# ---------------------------------------------------------------------------
+# generated : 2026-08-03T16:58:02Z
+# host      : Darwin 24.2.0 arm64
+# repo      : <repo root>
+# repo HEAD : bc29ff561dc85f4850fabcb00601e5e2faea8459
+# tool      : trivy Version: 0.72.0
+# command   :
+#     NO_COLOR=1 /opt/homebrew/bin/trivy config --format table --skip-version-check <repo root>/deploy/scan/00-rendered-manifests.yaml
+# ---------------------------------------------------------------------------
+# The exit code and status of the command above are in the TRAILER at the
+# end of this file. Findings are DATA: a non-zero exit here means the
+# scanner reported something, not that the scan failed.
+# ===========================================================================
+
+2026-08-03T12:58:03-04:00	INFO	[misconfig] Misconfiguration scanning is enabled
+2026-08-03T12:58:03-04:00	INFO	[checks-client] Using existing checks from cache	path="<home>/Library/Caches/trivy/policy/content"
+2026-08-03T12:58:03-04:00	INFO	Detected config files	num=1
+
+Report Summary
+
+┌────────────────────────────┬────────────┬───────────────────┐
+│           Target           │    Type    │ Misconfigurations │
+├────────────────────────────┼────────────┼───────────────────┤
+│ 00-rendered-manifests.yaml │ kubernetes │         1         │
+└────────────────────────────┴────────────┴───────────────────┘
+Legend:
+- '-': Not scanned
+- '0': Clean (no security findings detected)
+
+
+00-rendered-manifests.yaml (kubernetes)
+=======================================
+Tests: 101 (SUCCESSES: 100, FAILURES: 1)
+Failures: 1 (UNKNOWN: 0, LOW: 1, MEDIUM: 0, HIGH: 0, CRITICAL: 0)
+
+KSV-0110 (LOW): deployment chokepoint-agent-chokepoint in default namespace should set metadata.namespace to a non-default namespace
+════════════════════════════════════════
+Checks whether a workload is running in the default namespace.
+
+See https://avd.aquasec.com/misconfig/ksv-0110
+────────────────────────────────────────
+ 00-rendered-manifests.yaml:269-276
+────────────────────────────────────────
+ 269 ┌ ---
+ 270 │ # Source: agent-chokepoint/templates/deployment.yaml
+ 271 │ apiVersion: apps/v1
+ 272 │ kind: Deployment
+ 273 │ metadata:
+ 274 │   name: chokepoint-agent-chokepoint
+ 275 │   labels:
+ 276 └     helm.sh/chart: agent-chokepoint-0.1.0
+────────────────────────────────────────
+
+
+
+# ===========================================================================
+# TRAILER
+# exit code : 0
+# status    : RAN
+# note      : trivy config exits 0 whether or not it finds misconfigurations; read the report
+# ===========================================================================

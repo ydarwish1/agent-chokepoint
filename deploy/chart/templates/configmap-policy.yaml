@@ -1,0 +1,24 @@
+{{/*
+The LIVE policy, delivered as a ConfigMap and mounted read-only.
+
+files/policy.example.yaml is a relative SYMLINK to ../../../policy/policy.example.yaml
+— the same file policy/tests/ asserts against — so the deployed policy cannot
+drift from the shipped one. Helm follows symlinks inside a chart directory and
+logs "found symbolic link in path. Contents of linked file included and used";
+.Files.Get cannot escape the chart root, so a copy or a symlink is the only
+way, and a symlink is the one with no second source of truth.
+
+The proxy loads the policy ONCE at startup, so editing this ConfigMap changes
+nothing until the pod restarts. templates/deployment.yaml therefore carries a
+checksum/policy annotation over this file: `helm upgrade` rolls the pod
+whenever the rendered policy changes.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agent-chokepoint.fullname" . }}-policy
+  labels:
+    {{- include "agent-chokepoint.labels" . | nindent 4 }}
+data:
+  {{ base .Values.policyPath }}: |
+{{ .Files.Get "files/policy.example.yaml" | indent 4 }}

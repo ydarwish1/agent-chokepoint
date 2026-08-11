@@ -1,0 +1,24 @@
+# The events table, as a Grafana datasource. Provisioned rather than clicked
+# together, so the committed dashboard is exactly what renders.
+#
+# The password is read from the environment at load time ($__env{}), which is
+# why no credential appears in this repo. docker-compose.yml passes it through
+# from CHOKEPOINT_PG_PASSWORD and refuses to start without it.
+apiVersion: 1
+
+datasources:
+  - name: chokepoint-events
+    uid: chokepoint-events
+    type: grafana-postgresql-datasource
+    access: proxy
+    url: postgres:5432
+    user: chokepoint
+    database: chokepoint
+    isDefault: true
+    editable: false
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1700
+      timescaledb: false
+    secureJsonData:
+      password: $__env{CHOKEPOINT_PG_PASSWORD}

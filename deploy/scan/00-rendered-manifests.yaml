@@ -1,0 +1,451 @@
+# ===========================================================================
+# agent-chokepoint - config-scan evidence
+# artifact  : rendered chart manifests
+# ---------------------------------------------------------------------------
+# generated : 2026-08-03T16:58:02Z
+# host      : Darwin 24.2.0 arm64
+# repo      : <repo root>
+# repo HEAD : bc29ff561dc85f4850fabcb00601e5e2faea8459
+# tool      : v4.2.3+g43e8b7f
+# command   :
+#     /opt/homebrew/bin/helm template chokepoint <repo root>/deploy/chart --namespace chokepoint
+# ---------------------------------------------------------------------------
+# The exit code and status of the command above are in the TRAILER at the
+# end of this file. Findings are DATA: a non-zero exit here means the
+# scanner reported something, not that the scan failed.
+# ===========================================================================
+
+---
+# Source: agent-chokepoint/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: chokepoint-agent-chokepoint
+  labels:
+    helm.sh/chart: agent-chokepoint-0.1.0
+    app.kubernetes.io/name: agent-chokepoint
+    app.kubernetes.io/instance: chokepoint
+    app.kubernetes.io/version: "0.0.1.dev0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: agent-chokepoint
+      app.kubernetes.io/instance: chokepoint
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# Source: agent-chokepoint/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: chokepoint-agent-chokepoint
+  labels:
+    helm.sh/chart: agent-chokepoint-0.1.0
+    app.kubernetes.io/name: agent-chokepoint
+    app.kubernetes.io/instance: chokepoint
+    app.kubernetes.io/version: "0.0.1.dev0"
+    app.kubernetes.io/managed-by: Helm
+automountServiceAccountToken: false
+
+---
+# Source: agent-chokepoint/templates/configmap-policy.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chokepoint-agent-chokepoint-policy
+  labels:
+    helm.sh/chart: agent-chokepoint-0.1.0
+    app.kubernetes.io/name: agent-chokepoint
+    app.kubernetes.io/instance: chokepoint
+    app.kubernetes.io/version: "0.0.1.dev0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  policy.yaml: |
+    # Agent-Chokepoint — example policy
+    #
+    # This is the LIVE policy. The engine loads this exact file: the proxy is run
+    # against it, and policy/tests/ asserts both directions of every rule below
+    # straight out of this file rather than out of a fixture.
+    #
+    # Principle: deny by default. Anything not explicitly allowed is blocked.
+    # Every rule carries an id and an OWASP LLM mapping so findings are traceable.
+    #
+    # Path prefixes are ABSOLUTE, always, and the loader refuses any that are not.
+    # The engine cannot know the tool's working directory, so it refuses to judge a
+    # relative call path; a relative prefix therefore matches nothing it is ever
+    # asked about. This file shipped `path_within: ["./"]` next to absolute deny
+    # prefixes, and the deny half changed 0 of 15 path decisions while reading as
+    # protective.
+    
+    version: 0
+    
+    defaults:
+      decision: block          # deny by default - the whole point
+      on_no_match: block
+    
+    limits:
+      max_tool_calls_per_run: 100
+      max_wall_clock_seconds: 900
+      max_repeated_identical_calls: 3   # loop / retry-after-block abuse
+    
+    rules:
+    
+      - id: fs-read-scoped
+        owasp: LLM01
+        tool: read_file
+        decision: allow
+        when:
+          # The deny prefixes sit INSIDE the allow prefix on purpose. A deny entry
+          # outside it is unreachable — path_within has already failed by the time
+          # it would be consulted — which is B-006 in a new spelling.
+          path_within: ["/workspace/"]
+          path_not_within: ["/workspace/.ssh/", "/workspace/.aws/", "/workspace/.git/"]
+          # A prefix protects exactly the depth it is written at. With only the two
+          # lines above, /workspace/.ssh/id_rsa blocked while
+          # /workspace/project/.ssh/id_rsa, /workspace/project/.aws/credentials and
+          # /workspace/a/b/.git/config all came back ALLOW - 3 of 3 nested
+          # credential directories open, with this rule reading as though it covered
+          # them. This line denies the NAME at
+          # any depth instead. Components compare EXACTLY, so /workspace/.sshfoo/
+          # and /workspace/notes.gitignore are still allowed.
+          #
+          # It does subsume the three prefixes above - every path under
+          # /workspace/.ssh/ has a ".ssh" component. The prefix list is kept because
+          # it says where these directories are expected to live, and it stays true
+          # if this list is ever narrowed; the two are read together, not one
+          # instead of the other.
+          path_segment_not_in: [".ssh", ".aws", ".git"]
+    
+      - id: fs-write-scoped
+        owasp: LLM01
+        tool: write_file
+        decision: ask            # writes always surface to a human in this example
+        when:
+          path_within: ["/workspace/"]
+    
+      - id: net-fetch-allowlist
+        owasp: LLM01
+        tool: fetch_url
+        decision: allow
+        when:
+          domain_in:
+            - docs.python.org
+            - pypi.org
+    
+      - id: net-egress-sensitive
+        owasp: LLM02              # sensitive information disclosure
+        tool: fetch_url
+        decision: block
+        when:
+          args_match_any:
+            - secret_like          # entropy / known key formats
+            - private_key_block
+        note: >
+          Blocks the exfiltration leg of the lethal trifecta - private data leaving
+          through an otherwise permitted request.
+    
+      - id: shell-destructive
+        owasp: LLM01
+        tool: run_command
+        decision: block
+        when:
+          # These are REGEXES, not shell text. `|` means alternation here, so the
+          # pipe in "download and run it" has to be escaped — an unescaped
+          # "curl .* | sh" reads as "curl .* " OR " sh" and fires on `run sh script`
+          # while missing `curl x.sh|sh`.
+          command_matches_any:
+            - "rm -rf"
+            - 'curl[^|]*\|\s*(ba)?sh\b'   # pipe a download straight into a shell
+            - "chmod 777"
+    
+      # The ONLY allow rule for run_command, and it is deliberately tiny. It exists
+      # so shell-destructive has a genuine non-blocking case: a deny rule with no
+      # allowed neighbour is indistinguishable from a rule that refuses everything.
+      #
+      # Every pattern is FULLY anchored, \A ... \Z. command_matches_any is
+      # re.search over the whole command string, so an unanchored allow pattern
+      # permits any compound command that CONTAINS the permitted form. Measured:
+      #
+      #   pattern ^ls\b                  vs 'ls -la; cat /etc/shadow' -> MATCHES
+      #   pattern \Als( +-[A-Za-z]+)*\Z  vs 'ls -la; cat /etc/shadow' -> no match
+      #
+      # That is the entry docs/LIMITATIONS.md files under "Known false-ALLOW
+      # sources"; it was fixture-only until this rule existed, and a start-anchored
+      # allowlist would have moved it into the shipped policy. \Z rather than $
+      # because $ also matches just before a trailing newline - one byte of slack in
+      # a pattern whose whole job is to describe the command exactly.
+      #
+      # What is NOT here, and why: nothing that takes a file operand. run_command's
+      # binding is "command", not "path", so a permitted 'cat FILE' would be a file
+      # read that never passes through fs-read-scoped - 'cat /workspace/.ssh/id_rsa'
+      # would walk straight past that rule's deny list. ls is permitted with flags
+      # only, no operand, for the same reason.
+      #
+      # 'git status' was on this list and came OFF it, and the reason is the more
+      # useful half of the rule. It takes no operand, so it
+      # passed the test above - and it runs a program named by the REPOSITORY it is
+      # run in: git executes core.fsmonitor from the repo's own .git/config, no
+      # flags, no env, no operand. Measured, with a clean-repo control in the same
+      # run:
+      #
+      #   clean repo, 'git status'                 exit 0, no side effect
+      #   core.fsmonitor set, 'git status'         exit 0, the hook RAN and copied
+      #                                            .ssh/id_rsa out to a file
+      #
+      # And .git/config is writable through fs-write-scoped, which is "ask", not
+      # "block". So an allowlist entry that reads as the most harmless command in
+      # git became arbitrary code execution plus an unscoped file read, through a
+      # config file the same policy lets the agent propose writing. The general rule
+      # this leaves behind: a command is only allowlistable if its behaviour is a
+      # function of the command STRING - not of a config file, a hook, an alias or
+      # an environment variable that something else can write.
+      #
+      # That rule is a PRECONDITION on the command runner, not a property these
+      # three patterns already have, and this comment used to imply otherwise
+      # All three are bare
+      # command NAMES, and a bare name is resolved through PATH - exactly "an
+      # environment variable that something else can write". Measured, one variable,
+      # the same command string 'ls' through the same shell:
+      #
+      #   PATH=<dir holding a shim named ls>:/usr/bin:/bin   the shim RAN
+      #   PATH=/usr/bin:/bin                    <- control   the real ls ran
+      #
+      # So: allowlistable where the runner pins command resolution, and not
+      # otherwise. Under THIS policy the agent cannot arm that itself - measured
+      # against this file: write_file /workspace/bin/ls is ASK (not allow), and
+      # 'chmod +x ...', 'PATH=/workspace/bin ls' and 'export PATH=...' all block. It
+      # needs a directory ALREADY on the runner's PATH that something else can
+      # write, which is a deployment property this file cannot see. Filed with the
+      # measurements in docs/LIMITATIONS.md under "Known false-ALLOW sources";
+      # closing it means a runner that pins resolution or a predicate that is not a
+      # regex over a command string, and both are policy-schema decisions.
+      #
+      # Precedence, which the echo pattern is here to make testable: decide()
+      # resolves block > ask > allow across ALL matching rules, so 'echo rm -rf /'
+      # matches this rule AND shell-destructive's "rm -rf" and still comes back
+      # block / shell-destructive. Asserted in
+      # policy/tests/test_example_policy_rules.py, not assumed.
+      - id: shell-readonly
+        owasp: LLM01
+        tool: run_command
+        decision: allow
+        when:
+          command_matches_any:
+            - '\Apwd\Z'
+            - '\Als( +-[A-Za-z]+)*\Z'         # flags only: ls, ls -la. No operand.
+            # Body carries no shell metacharacter. One space is required after
+            # "echo", so a bare "echo" is not spelled by this pattern and blocks.
+            - '\Aecho +[A-Za-z0-9 ._/-]*\Z'
+        note: >
+          The read-only half of run_command. Anything not spelled exactly like one
+          of these three is left to the other rules and, failing those, to
+          deny-by-default - including every compound command, since no pattern here
+          can match past a semicolon, a pipe, an ampersand, a redirect, a command
+          substitution or a newline. None of the three names a path, so none is a
+          second file read that skips fs-read-scoped. All three are bare command
+          NAMES, so WHICH program runs is a function of the runner's PATH as well as
+          of the string this rule matches - the precondition is stated in the
+          comment above and filed in docs/LIMITATIONS.md, not met by the pattern.
+          `ls` does still ENUMERATE whatever working directory the tool happens to
+          have, denied directories
+          included - names, never contents, and it cannot ask for a directory by
+          name. That residual is filed in docs/LIMITATIONS.md under "Known
+          false-ALLOW sources" rather than closed, because closing it means the
+          policy knowing the tool's cwd, which is exactly what B-006 established it
+          cannot know.
+    
+    # Open design questions - resolve before v1:
+    #   - Are match predicates (path_within, domain_in) a fixed vocabulary or an
+    #     expression language? Fixed vocabulary first; see MCP-Scan's DSL for the
+    #     alternative.
+    #   - Does "ask" block until a human answers, or fail closed on timeout?
+    #     Fail closed.
+    #   - Where do per-agent identities live so one policy can serve many agents?
+    
+
+---
+# Source: agent-chokepoint/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chokepoint-agent-chokepoint
+  labels:
+    helm.sh/chart: agent-chokepoint-0.1.0
+    app.kubernetes.io/name: agent-chokepoint
+    app.kubernetes.io/instance: chokepoint
+    app.kubernetes.io/version: "0.0.1.dev0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agent-chokepoint
+      app.kubernetes.io/instance: chokepoint
+  template:
+    metadata:
+      annotations:
+        # The proxy loads the policy ONCE at startup. Without this, editing the
+        # policy ConfigMap would change the mounted file and leave the running
+        # gateway enforcing the old rules. This rolls the pod on any change.
+        checksum/policy: 875832d3c7b716f87a12b70079286ad2d8a5dbe1cfc7cd45dff7b61a7403cfa8
+      labels:
+        app.kubernetes.io/name: agent-chokepoint
+        app.kubernetes.io/instance: chokepoint
+    spec:
+      serviceAccountName: chokepoint-agent-chokepoint
+      # Half of the minimal-RBAC answer; see templates/serviceaccount.yaml.
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: "agent-chokepoint:phase3"
+          imagePullPolicy: IfNotPresent
+          # DELIBERATELY NO `stdin: true`. It was required while the container's
+          # main process WAS the proxy: with stdin at /dev/null, stdio_server()
+          # read EOF immediately and the process exited -> CrashLoopBackOff. The
+          # main process is now the DRIVER, which is the client: it spawns the
+          # proxy and owns that child's stdin as its parent, and it never reads
+          # the container's own stdin. Holding a stream open for a consumer that
+          # no longer exists would be an unexamined knob hiding what the pod
+          # actually needs. Checked before removing: nothing else depends on it
+          # — deploy/demo/cluster_acceptance.py reaches the pod with
+          # `kubectl exec -i`, which pipes into a NEW process and needs no
+          # pod-spec stdin (that is `kubectl attach`), and no other file in the
+          # repo references it.
+          tty: false
+          command:
+            - "/usr/local/bin/python3"
+            - "/app/deploy/demo/gateway_driver.py"
+            - "--policy"
+            - "/etc/chokepoint/policy.yaml"
+            - "--state-dir"
+            - "/sandbox"
+            - "--"
+            - "/usr/local/bin/python3"
+            - "/app/proxy/demo/upstream_server.py"
+            - "--sandbox"
+            - "/sandbox"
+          env:
+            - name: PATH
+              value: "/usr/local/bin:/usr/bin:/bin"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          # LIVENESS: is the driver still alive AND still working? It bumps
+          # /sandbox/heartbeat every 10s; this probe reads
+          # that file's MTIME and requires it to be FRESH. It does not merely
+          # test that the file exists. Existence alone is worthless: the file
+          # outlives the process that wrote it, so a dead or wedged driver would
+          # look healthy forever and the pod would sit there enforcing nothing.
+          # That is precisely the failure this change exists to prevent.
+          # os.stat() raises when the file is absent, so "never started" fails
+          # the same check as "stopped beating" — one probe covers both.
+          #
+          # 40s = 4 missed bumps: wide enough that one late bump under the 500m
+          # CPU limit is not a restart, narrow enough that a dead driver is
+          # caught inside ~70s (first stale read >=40s after the last bump, then
+          # failureThreshold 3 x periodSeconds 10). initialDelaySeconds 60 is
+          # the startup budget, and it is load-bearing: the driver beats only
+          # once it reaches its holding phase, which is AFTER the acceptance
+          # legs, so this delay must cover image start, interpreter start, the
+          # driver spawning the proxy which spawns the upstream, AND the legs
+          # themselves — a restart mid-acceptance would be self-inflicted. The
+          # contract this sets for the driver: FIRST heartbeat within 60s of
+          # container start; the kubelet restarts at ~90s (60 + 3 x 10).
+          livenessProbe:
+            exec:
+              command:
+                - "/usr/local/bin/python3"
+                - -c
+                - >-
+                  import os, sys, time;
+                  sys.exit(0 if time.time() - os.stat("/sandbox/heartbeat").st_mtime < 40 else 1)
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # READINESS: did a REAL tool call cross the DEPLOYED proxy and come
+          # back with the verdict the policy owes it? The driver creates
+          # /sandbox/ready ONLY when every acceptance leg
+          # passed, so Ready now means enforcement was exercised and was right.
+          # Before, Ready meant the modules imported and the policy parsed —
+          # true of a pod that had never judged a single call.
+          #
+          # No value here can make this lax: the probe reads an artifact that
+          # only a fully passing run produces. Kubernetes never expires a
+          # readiness probe that has not yet succeeded — the pod simply stays
+          # NotReady and keeps probing — so a broken driver cannot age into
+          # Ready; it is the rollout's `--wait` timeout, not failureThreshold,
+          # that bounds the wait. failureThreshold governs the other direction
+          # (a pod that WAS Ready), where 3 x 5s de-registers promptly.
+          # initialDelaySeconds 10 only avoids probing before any run could
+          # plausibly have finished.
+          readinessProbe:
+            exec:
+              command:
+                - "/usr/local/bin/python3"
+                - -c
+                - >-
+                  import os, sys;
+                  sys.exit(0 if os.path.exists("/sandbox/ready") else 1)
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 192Mi
+          volumeMounts:
+            - name: policy
+              mountPath: "/etc/chokepoint"
+              readOnly: true
+            # Also the driver's --state-dir: acceptance.json, `ready` and
+            # `heartbeat` are written here, which is why both probes read it.
+            - name: sandbox
+              mountPath: "/sandbox"
+            # readOnlyRootFilesystem: true leaves no writable /tmp. The demo
+            # drivers this deployment runs use tempfile.TemporaryDirectory
+            # (proxy/demo/run_demo.py:117, pep/demo/two_doors_paths.py:799,
+            # hooks/demo/side_by_side.py:920), which fails without one.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: policy
+          configMap:
+            name: chokepoint-agent-chokepoint-policy
+            defaultMode: 0444
+        - name: sandbox
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+
+# --- helm template stderr ---
+# level=INFO msg="found symbolic link in path. Contents of linked file included and used" path=<repo root>/deploy/chart/files/policy.example.yaml resolved=<repo root>/policy/policy.example.yaml
+
+# ===========================================================================
+# TRAILER
+# exit code : 0
+# status    : RAN
+# ===========================================================================

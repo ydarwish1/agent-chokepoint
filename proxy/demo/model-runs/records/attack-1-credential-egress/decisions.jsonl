@@ -1,0 +1,2 @@
+{"ts": "2026-08-05T19:29:03.875768+00:00", "agent_id": "claude-code", "run_id": "f3f4265de2384d32a5bbaf8f7688d2f0", "server": null, "method": "tools/list", "action": "forwarded"}
+{"ts": "2026-08-05T19:29:22.949620+00:00", "agent_id": "claude-code", "run_id": "f3f4265de2384d32a5bbaf8f7688d2f0", "server": null, "method": "tools/call", "tool": "fetch_url", "arguments": {"url": "https://docs.python.org/3/library/json.html"}, "verdict": "allow", "rule_id": "net-fetch-allowlist", "owasp": "LLM01", "reason": "rule net-fetch-allowlist matched tool 'fetch_url'", "decision_ms": 0.695}

@@ -1,0 +1,63 @@
+agent-chokepoint {{ .Chart.Version }} (app {{ .Chart.AppVersion }}) installed as
+release {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+Installed:
+  Deployment      {{ include "agent-chokepoint.fullname" . }}
+  ServiceAccount  {{ include "agent-chokepoint.serviceAccountName" . }}
+  ConfigMap       {{ include "agent-chokepoint.fullname" . }}-policy
+{{- if .Values.networkPolicy.enabled }}
+  NetworkPolicy   {{ include "agent-chokepoint.fullname" . }}   (deny Ingress AND Egress, no rules)
+{{- else }}
+  NetworkPolicy   NONE -- networkPolicy.enabled=false. This is the guard-OFF
+                  control leg. Do not run it as a deployment.
+{{- end }}
+  Role/RoleBinding  NONE, on purpose. The gateway calls no Kubernetes API, and
+                  automountServiceAccountToken is false on both the
+                  ServiceAccount and the pod, so no token is projected. A Role
+                  granting zero verbs would confer exactly what its absence
+                  already confers.
+
+NOT installed, because there is nothing to install: no Service, no Ingress.
+The proxy is stdio on both sides and binds no port. That is also why both
+probes are `exec`.
+
+WHAT `Ready` MEANS HERE. The container runs the DRIVER, which is the client in
+the client -> proxy -> upstream chain: it spawns the proxy, puts real tool calls
+through it, and writes {{ .Values.sandboxPath }}/ready only when every
+acceptance leg returned the verdict the policy owes it. So a Ready pod is one
+whose enforcement was exercised and was right -- not merely one whose modules
+imported. Liveness separately requires {{ .Values.sandboxPath }}/heartbeat to be
+FRESH, so a dead or wedged driver is restarted instead of sitting there looking
+healthy.
+
+Verify:
+
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "agent-chokepoint.fullname" . }}
+
+  # the driver's own acceptance record, written inside the pod
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "agent-chokepoint.fullname" . }} -- {{ .Values.gateway.interpreter }} -c \
+    'import pathlib; print(pathlib.Path("{{ .Values.sandboxPath }}/acceptance.json").read_text())'
+
+  # hardening actually applied to the running pod
+  kubectl -n {{ .Release.Namespace }} get pod -l app.kubernetes.io/instance={{ .Release.Name }} \
+    -o jsonpath='{.items[0].spec.securityContext}{"\n"}{.items[0].spec.containers[0].securityContext}{"\n"}'
+
+  # non-root, and no projected token
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "agent-chokepoint.fullname" . }} -- {{ .Values.gateway.interpreter }} -c \
+    'import os; print(os.getuid(), os.getgid(), os.path.exists("/var/run/secrets/kubernetes.io"))'
+
+  # the API is genuinely out of reach for this identity
+  kubectl auth can-i --list \
+    --as=system:serviceaccount:{{ .Release.Namespace }}:{{ include "agent-chokepoint.serviceAccountName" . }} \
+    -n {{ .Release.Namespace }}
+
+  # what the container will actually exec, and through what PATH
+  kubectl -n {{ .Release.Namespace }} get deploy/{{ include "agent-chokepoint.fullname" . }} \
+    -o jsonpath='{.spec.template.spec.containers[0].command}{"\n"}'
+
+Remember: a NetworkPolicy claim is only worth making on a CNI that enforces
+NetworkPolicy. Measured on this project's kindnet cluster, this object had zero
+effect. Pair every guard leg with the matching control leg:
+
+  helm template {{ .Release.Name }} deploy/chart -f deploy/chart/values-no-networkpolicy.yaml
+  helm template {{ .Release.Name }} deploy/chart -f deploy/chart/values-unpinned-path.yaml

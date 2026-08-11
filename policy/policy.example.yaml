@@ -1,0 +1,297 @@
+# Agent-Chokepoint — example policy
+#
+# This is the LIVE policy. The engine loads this exact file: the proxy is run
+# against it, and policy/tests/ asserts both directions of every rule below
+# straight out of this file rather than out of a fixture.
+#
+# Principle: deny by default. Anything not explicitly allowed is blocked.
+# Every rule carries an id and an OWASP LLM mapping so findings are traceable.
+#
+# Path prefixes are ABSOLUTE, always, and the loader refuses any that are not.
+# The engine cannot know the tool's working directory, so it refuses to judge a
+# relative call path; a relative prefix therefore matches nothing it is ever
+# asked about. This file shipped `path_within: ["./"]` next to absolute deny
+# prefixes, and the deny half changed 0 of 15 path decisions while reading as
+# protective.
+
+version: 0
+
+defaults:
+  decision: block          # deny by default - the whole point
+  on_no_match: block
+
+limits:
+  # Per RUN - and a run is one MCP client session with the proxy, which for
+  # this stdio proxy is one proxy process (its run state is built once per
+  # process). A session held open past
+  # max_wall_clock_seconds is one over-budget run and every later call blocks:
+  # measured live, the deployed gateway went dark 900s after container start
+  # and the kubelet restarted a healthy pod every ~16 minutes. A long-lived
+  # deployment must therefore recycle its session under these caps - the
+  # deployed driver does (deploy/demo/gateway_driver.py, RECYCLE_SECONDS).
+  max_tool_calls_per_run: 100
+  max_wall_clock_seconds: 900
+  max_repeated_identical_calls: 3   # loop / retry-after-block abuse
+
+taint:
+  # Taint tracking. A run that has consumed a result from an untrusted source is
+  # MARKED, and this block says what it may still send afterwards.
+  #
+  # What this is NOT: it does not decide whether the consumed content is
+  # malicious. That is content filtering, ruled out of scope in README.md and
+  # unmeasurable here. It records one fact - this run has read something the
+  # operator called untrusted - and lets the policy tighten what is allowed after
+  # it. The result itself is never inspected: the proxy forwards the upstream's
+  # bytes untouched and marks the run on the SOURCE, not on the content.
+  #
+  # Enforced at the PROXY only. Taint is a property of a run, and a run is one
+  # MCP client session (D-022); the Claude Code hook is one process per tool call
+  # and holds no run, which is the same reason it enforces no `limits:`. See
+  # docs/LIMITATIONS.md, the hook section.
+
+  # Tools whose RESULTS mark the run tainted. `fetch_url` is the obvious one: a
+  # page the agent fetched is the classic indirect-injection carrier.
+  sources: [fetch_url]
+
+  # Tools whose ARGUMENTS can carry data OUT. A separate list from `sources` on
+  # purpose - reading untrusted content and sending data out are different
+  # capabilities that happen to coincide for fetch_url. `run_command` is here as
+  # a CLASS (curl, mail, nc are all run_command), even though this policy's own
+  # allow half for it is three anchored read-only patterns.
+  egress_tools: [fetch_url, run_command]
+
+  # secrets_only | secrets_and_new_domains | all_egress - the operator's dial.
+  #
+  #   secrets_only (shipped default)
+  #     A tainted run may not send a call carrying a published credential format.
+  #     Narrowest, and it adds no NEW matching: it is the same matcher union
+  #     net-egress-sensitive already uses. Under THIS policy that makes it a
+  #     no-op for fetch_url - net-egress-sensitive blocks those calls tainted or
+  #     not - so what it actually adds is that matching on run_command, which
+  #     D-028 deliberately kept out of that rule's scope. Measured: `echo <an
+  #     AKIA-shaped string>` is allow/shell-readonly in a clean run and
+  #     block/taint:secret-egress once the run has fetched something.
+  #
+  #   secrets_and_new_domains
+  #     Also refuses an egress call whose `url` ARGUMENT names a host outside
+  #     `allowed_domains` below. Catches exfiltration to an attacker-chosen host.
+  #     A research flow that follows links WILL hit this. With `allowed_domains`
+  #     omitted, no host is exempt and every url-bearing egress call is refused
+  #     after taint - fail-closed, and easy to write by accident.
+  #     READ `url` LITERALLY: this leg is `domain_in`, which binds to the `url`
+  #     argument, so a host written inside a `command` (`curl https://evil.test`)
+  #     is not seen by it. Under THIS policy that is academic - no spelling of
+  #     curl matches any shell-readonly pattern, so such a command is
+  #     block/default:on_no_match anyway - but it stops being academic the moment
+  #     an operator adds an allow rule for a network-capable command.
+  #     docs/LIMITATIONS.md, Known false-ALLOW sources, states it. The
+  #     secrets_only leg is unaffected: it walks every argument value.
+  #
+  #   all_egress
+  #     Every egress call after taint. Strictest, and it will break ordinary
+  #     research: one fetch and the run can no longer fetch anything.
+  #     "After taint" means after the source call's RESULT comes back, which is
+  #     when the run is marked. A client that keeps two calls in flight at once
+  #     can therefore have an egress call judged clean while the fetch is still
+  #     outstanding (B-047). The run has consumed nothing at that point, so the
+  #     contract holds - but do not read this line as "the moment the fetch is
+  #     sent".
+  egress_mode: secrets_only
+
+  # block | ask. READ THIS BEFORE WRITING `ask`, because the two doors differ and
+  # one of them is not a human:
+  #   proxy - `ask` FAILS CLOSED with MCP error -32001 (D-005). There is no
+  #           approval channel wired, so at this door `ask` is a block with a
+  #           better error message. Nobody is asked.
+  #   hook  - `ask` maps to Claude Code's own `ask` and a real human answers.
+  # Since taint is enforced at the proxy only (see above), `ask` today means
+  # "refuse, and say it was taint" - not "check with someone".
+  on_taint: block
+
+  # Hosts still reachable AFTER taint. Only consulted under
+  # secrets_and_new_domains; deliberately its own list rather than
+  # net-fetch-allowlist's, because "reachable at all" and "reachable once this
+  # run has read something untrusted" are different questions and the second
+  # answer is legitimately narrower.
+  allowed_domains: [docs.python.org]
+
+rules:
+
+  - id: fs-read-scoped
+    owasp: LLM01
+    tool: read_file
+    decision: allow
+    when:
+      # The deny prefixes sit INSIDE the allow prefix on purpose. A deny entry
+      # outside it is unreachable — path_within has already failed by the time
+      # it would be consulted — which is B-006 in a new spelling.
+      path_within: ["/workspace/"]
+      path_not_within: ["/workspace/.ssh/", "/workspace/.aws/", "/workspace/.git/"]
+      # A prefix protects exactly the depth it is written at. With only the two
+      # lines above, /workspace/.ssh/id_rsa blocked while
+      # /workspace/project/.ssh/id_rsa, /workspace/project/.aws/credentials and
+      # /workspace/a/b/.git/config all came back ALLOW - 3 of 3 nested
+      # credential directories open, with this rule reading as though it covered
+      # them. This line denies the NAME at
+      # any depth instead. Components compare EXACTLY, so /workspace/.sshfoo/
+      # and /workspace/notes.gitignore are still allowed.
+      #
+      # It does subsume the three prefixes above - every path under
+      # /workspace/.ssh/ has a ".ssh" component. The prefix list is kept because
+      # it says where these directories are expected to live, and it stays true
+      # if this list is ever narrowed; the two are read together, not one
+      # instead of the other.
+      path_segment_not_in: [".ssh", ".aws", ".git"]
+
+  - id: fs-write-scoped
+    owasp: LLM01
+    tool: write_file
+    decision: ask            # writes always surface to a human in this example
+    when:
+      path_within: ["/workspace/"]
+
+  - id: net-fetch-allowlist
+    owasp: LLM01
+    tool: fetch_url
+    decision: allow
+    when:
+      domain_in:
+        - docs.python.org
+        - pypi.org
+
+  - id: net-egress-sensitive
+    owasp: LLM02              # sensitive information disclosure
+    tool: fetch_url
+    decision: block
+    when:
+      args_match_any:
+        - secret_like          # fixed list of published credential formats - NOT entropy (D-027)
+        - private_key_block
+    note: >
+      Blocks the exfiltration leg of the lethal trifecta - private data leaving
+      through an otherwise permitted request. Scoped to fetch_url deliberately
+      (D-028): under THIS policy it is the only tool that can both reach the
+      network and be allowed - run_command's one allow rule below is anchored,
+      flags-only, no operand, so every network-capable command string falls to
+      deny-by-default (measured; the egress spellings are pinned in
+      policy/tests/test_example_policy_rules.py). Any future allow rule for
+      run_command that can name a network command or take an operand re-opens
+      this ruling.
+
+  - id: shell-destructive
+    owasp: LLM01
+    tool: run_command
+    decision: block
+    when:
+      # These are REGEXES, not shell text. `|` means alternation here, so the
+      # pipe in "download and run it" has to be escaped — an unescaped
+      # "curl .* | sh" reads as "curl .* " OR " sh" and fires on `run sh script`
+      # while missing `curl x.sh|sh`.
+      command_matches_any:
+        - "rm -rf"
+        - 'curl[^|]*\|\s*(ba)?sh\b'   # pipe a download straight into a shell
+        - "chmod 777"
+
+  # The ONLY allow rule for run_command, and it is deliberately tiny. It exists
+  # so shell-destructive has a genuine non-blocking case: a deny rule with no
+  # allowed neighbour is indistinguishable from a rule that refuses everything.
+  #
+  # Every pattern is FULLY anchored, \A ... \Z. command_matches_any is
+  # re.search over the whole command string, so an unanchored allow pattern
+  # permits any compound command that CONTAINS the permitted form. Measured:
+  #
+  #   pattern ^ls\b                  vs 'ls -la; cat /etc/shadow' -> MATCHES
+  #   pattern \Als( +-[A-Za-z]+)*\Z  vs 'ls -la; cat /etc/shadow' -> no match
+  #
+  # That is the entry docs/LIMITATIONS.md files under "Known false-ALLOW
+  # sources"; it was fixture-only until this rule existed, and a start-anchored
+  # allowlist would have moved it into the shipped policy. \Z rather than $
+  # because $ also matches just before a trailing newline - one byte of slack in
+  # a pattern whose whole job is to describe the command exactly.
+  #
+  # What is NOT here, and why: nothing that takes a file operand. run_command's
+  # binding is "command", not "path", so a permitted 'cat FILE' would be a file
+  # read that never passes through fs-read-scoped - 'cat /workspace/.ssh/id_rsa'
+  # would walk straight past that rule's deny list. ls is permitted with flags
+  # only, no operand, for the same reason.
+  #
+  # 'git status' was on this list and came OFF it, and the reason is the more
+  # useful half of the rule. It takes no operand, so it
+  # passed the test above - and it runs a program named by the REPOSITORY it is
+  # run in: git executes core.fsmonitor from the repo's own .git/config, no
+  # flags, no env, no operand. Measured, with a clean-repo control in the same
+  # run:
+  #
+  #   clean repo, 'git status'                 exit 0, no side effect
+  #   core.fsmonitor set, 'git status'         exit 0, the hook RAN and copied
+  #                                            .ssh/id_rsa out to a file
+  #
+  # And .git/config is writable through fs-write-scoped, which is "ask", not
+  # "block". So an allowlist entry that reads as the most harmless command in
+  # git became arbitrary code execution plus an unscoped file read, through a
+  # config file the same policy lets the agent propose writing. The general rule
+  # this leaves behind: a command is only allowlistable if its behaviour is a
+  # function of the command STRING - not of a config file, a hook, an alias or
+  # an environment variable that something else can write.
+  #
+  # That rule is a PRECONDITION on the command runner, not a property these
+  # three patterns already have, and this comment used to imply otherwise.
+  # All three are bare
+  # command NAMES, and a bare name is resolved through PATH - exactly "an
+  # environment variable that something else can write". Measured, one variable,
+  # the same command string 'ls' through the same shell:
+  #
+  #   PATH=<dir holding a shim named ls>:/usr/bin:/bin   the shim RAN
+  #   PATH=/usr/bin:/bin                    <- control   the real ls ran
+  #
+  # So: allowlistable where the runner pins command resolution, and not
+  # otherwise. Under THIS policy the agent cannot arm that itself - measured
+  # against this file: write_file /workspace/bin/ls is ASK (not allow), and
+  # 'chmod +x ...', 'PATH=/workspace/bin ls' and 'export PATH=...' all block. It
+  # needs a directory ALREADY on the runner's PATH that something else can
+  # write, which is a deployment property this file cannot see. Filed with the
+  # measurements in docs/LIMITATIONS.md under "Known false-ALLOW sources";
+  # closing it means a runner that pins resolution or a predicate that is not a
+  # regex over a command string, and both are policy-schema decisions.
+  #
+  # Precedence, which the echo pattern is here to make testable: decide()
+  # resolves block > ask > allow across ALL matching rules, so 'echo rm -rf /'
+  # matches this rule AND shell-destructive's "rm -rf" and still comes back
+  # block / shell-destructive. Asserted in
+  # policy/tests/test_example_policy_rules.py, not assumed.
+  - id: shell-readonly
+    owasp: LLM01
+    tool: run_command
+    decision: allow
+    when:
+      command_matches_any:
+        - '\Apwd\Z'
+        - '\Als( +-[A-Za-z]+)*\Z'         # flags only: ls, ls -la. No operand.
+        # Body carries no shell metacharacter. One space is required after
+        # "echo", so a bare "echo" is not spelled by this pattern and blocks.
+        - '\Aecho +[A-Za-z0-9 ._/-]*\Z'
+    note: >
+      The read-only half of run_command. Anything not spelled exactly like one
+      of these three is left to the other rules and, failing those, to
+      deny-by-default - including every compound command, since no pattern here
+      can match past a semicolon, a pipe, an ampersand, a redirect, a command
+      substitution or a newline. None of the three names a path, so none is a
+      second file read that skips fs-read-scoped. All three are bare command
+      NAMES, so WHICH program runs is a function of the runner's PATH as well as
+      of the string this rule matches - the precondition is stated in the
+      comment above and filed in docs/LIMITATIONS.md, not met by the pattern.
+      `ls` does still ENUMERATE whatever working directory the tool happens to
+      have, denied directories
+      included - names, never contents, and it cannot ask for a directory by
+      name. That residual is filed in docs/LIMITATIONS.md under "Known
+      false-ALLOW sources" rather than closed, because closing it means the
+      policy knowing the tool's cwd, which is exactly what B-006 established it
+      cannot know.
+
+# Open design questions - resolve before v1:
+#   - Are match predicates (path_within, domain_in) a fixed vocabulary or an
+#     expression language? Fixed vocabulary first; see MCP-Scan's DSL for the
+#     alternative.
+#   - Does "ask" block until a human answers, or fail closed on timeout?
+#     Fail closed.
+#   - Where do per-agent identities live so one policy can serve many agents?

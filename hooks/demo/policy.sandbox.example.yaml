@@ -1,0 +1,96 @@
+# Agent-Chokepoint — SANDBOX policy, written for hooks/demo/real_agent_run.py
+#
+# This is NOT the shipped policy. `policy/policy.example.yaml` is the live one,
+# and `hooks/demo/side_by_side.py` loads it unmodified. This file exists for one
+# reason, and the transcript it feeds says so in the same words:
+#
+#   policy.example.yaml's allow prefix is `/workspace/`, a path that does not
+#   exist on a developer laptop and cannot be conjured onto one. A real agent
+#   working in a disposable folder would therefore have EVERY call fall to
+#   `default:on_no_match`. That would prove the hook can deny and prove nothing
+#   about it allowing — and a control that only ever says no is indistinguishable
+#   from one that is broken.
+#
+# So the allow prefix here is the disposable project folder the harness creates.
+# `real_agent_run.py` reads THIS file and replaces every occurrence of
+# `/ABSOLUTE/PATH/TO/PROJECT` with that folder's real absolute path before the
+# hook loads it; the generated text is printed verbatim in the transcript so the
+# reader checks the substitution rather than trusting it. The placeholder is
+# itself absolute, so this file loads and lints as it stands.
+#
+# The structure is copied from `policy/policy.example.yaml` deliberately,
+# including the property B-006 established: the deny prefixes sit INSIDE the
+# allow prefix. A deny entry outside it is unreachable — `path_within` has
+# already failed by the time it would be consulted.
+#
+# Scope of the artifact this feeds: it answers "does the hook fire and enforce
+# inside a real Claude Code session". It does not answer "is the shipped policy
+# right" — that question belongs to the side-by-side transcript, which uses the
+# shipped file unmodified.
+
+version: 0
+
+defaults:
+  decision: block          # deny by default - the whole point
+  on_no_match: block
+
+limits:
+  # Present to match the shipped file's shape. The hook passes run_state=None,
+  # so decide() skips this block entirely — limits are the proxy's job, and
+  # hooks/README.md says so. Nothing in this run exercises them.
+  max_tool_calls_per_run: 100
+  max_wall_clock_seconds: 900
+  max_repeated_identical_calls: 3
+
+rules:
+
+  - id: fs-read-scoped
+    owasp: LLM01
+    tool: read_file
+    decision: allow
+    when:
+      path_within: ["/ABSOLUTE/PATH/TO/PROJECT/"]
+      path_not_within:
+        - "/ABSOLUTE/PATH/TO/PROJECT/.ssh/"
+        - "/ABSOLUTE/PATH/TO/PROJECT/.aws/"
+        - "/ABSOLUTE/PATH/TO/PROJECT/.git/"
+
+  - id: fs-write-scoped
+    owasp: LLM01
+    tool: write_file
+    decision: ask            # writes always surface to a human in this example
+    when:
+      path_within: ["/ABSOLUTE/PATH/TO/PROJECT/"]
+
+  - id: net-fetch-allowlist
+    owasp: LLM01
+    tool: fetch_url
+    decision: allow
+    when:
+      domain_in:
+        - docs.python.org
+        - pypi.org
+
+  - id: net-egress-sensitive
+    owasp: LLM02              # sensitive information disclosure
+    tool: fetch_url
+    decision: block
+    when:
+      args_match_any:
+        - secret_like
+        - private_key_block
+
+  - id: shell-destructive
+    owasp: LLM01
+    tool: run_command
+    decision: block
+    when:
+      # Regexes, not shell text — see policy/policy.example.yaml and B-001.
+      # Note what is NOT here: any `allow` rule for run_command. Every shell
+      # command, however dull, therefore reaches default:on_no_match and is
+      # denied. The task list uses `ls -1` precisely so the denial cannot be
+      # mistaken for this rule firing.
+      command_matches_any:
+        - "rm -rf"
+        - 'curl[^|]*\|\s*(ba)?sh\b'
+        - "chmod 777"

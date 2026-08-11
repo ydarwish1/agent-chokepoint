@@ -1,0 +1,214 @@
+{
+  "uid": "chokepoint-decisions",
+  "title": "Agent-Chokepoint — decisions",
+  "description": "Every decision the gateway made, from the JSONL its enforcement points write (telemetry/event-schema.json). The detection panel embeds the SQL that telemetry/sigma/*.yml converts to, verbatim — tests/test_telemetry_controls.py fails if the two drift.",
+  "tags": ["agent-chokepoint", "owasp-llm"],
+  "timezone": "utc",
+  "editable": false,
+  "schemaVersion": 41,
+  "version": 3,
+  "refresh": "",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Decisions",
+      "description": "Judged tool calls, both doors (method tools/call from the proxy, PreToolUse from the hook). Excludes tools/list, which is forwarding rather than a decision.",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "chokepoint-events" },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "text" }, "unit": "short" }, "overrides": [] },
+      "options": { "graphMode": "none", "textMode": "value", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "chokepoint-events" },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT count(*) AS decisions FROM events WHERE $__timeFilter(ts) AND method IN ('tools/call', 'PreToolUse')"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Blocked",
+      "description": "verdict = block. The call never reached the tool.",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "chokepoint-events" },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "red" }, "unit": "short" }, "overrides": [] },
+      "options": { "graphMode": "none", "textMode": "value", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "chokepoint-events" },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT count(*) AS blocked FROM events WHERE $__timeFilter(ts) AND verdict = 'block'"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Approval required (refused)",
+      "description": "verdict = ask. No approval channel is wired, so ask FAILS CLOSED (D-005): these calls were refused too, and are counted apart from block because the reason differs.",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "chokepoint-events" },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "orange" }, "unit": "short" }, "overrides": [] },
+      "options": { "graphMode": "none", "textMode": "value", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "chokepoint-events" },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT count(*) AS ask FROM events WHERE $__timeFilter(ts) AND verdict = 'ask'"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Engine decision p95",
+      "description": "95th percentile of decision_ms over calls the ENGINE judged. decision_ms is exactly 0.0 on refusals made before the engine ran (unparseable input, unresolvable path, uninspectable channel), so those are excluded — averaging them in would report a latency the engine never spent.",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "chokepoint-events" },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "green" }, "unit": "ms", "decimals": 3 }, "overrides": [] },
+      "options": { "graphMode": "none", "textMode": "value", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "chokepoint-events" },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY decision_ms) AS p95_ms FROM events WHERE $__timeFilter(ts) AND decision_ms > 0"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Decisions over time, by verdict",
+      "description": "A healthy gateway allows work and refuses the rest. A period where allow drops to zero while block climbs is the shape of a gateway that is up, healthy and serving nobody.",
+      "gridPos": { "h": 9, "w": 14, "x": 0, "y": 4 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "chokepoint-events" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "bars", "fillOpacity": 70, "lineWidth": 1, "stacking": { "mode": "normal" }, "barAlignment": 0 },
+          "unit": "short"
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "allow" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
+          { "matcher": { "id": "byName", "options": "block" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] },
+          { "matcher": { "id": "byName", "options": "ask" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "chokepoint-events" },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroupAlias(ts, $__interval), verdict AS metric, count(*) AS value FROM events WHERE $__timeFilter(ts) AND verdict IS NOT NULL GROUP BY 1, 2 ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Detections firing (telemetry/sigma)",
+      "description": "Each row is one shipped Sigma rule, and each WHERE clause below is the SQL that rule converts to — copied verbatim from `sigma convert -t sqlite`, not paraphrased. A zero here means the pattern is absent from the window, never that the rule is untested: tests/test_telemetry_controls.py fires every rule on real events and shows the benign neighbour it must not fire on.",
+      "gridPos": { "h": 9, "w": 10, "x": 14, "y": 4 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "chokepoint-events" },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" } } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "hits" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "text", "value": null }, { "color": "red", "value": 1 }] } },
+              { "id": "custom.width", "value": 70 }
+            ]
+          }
+        ]
+      },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "hits", "desc": true }] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "chokepoint-events" },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT 'Injection-class tool call blocked' AS detection, count(*) AS hits FROM events WHERE $__timeFilter(ts) AND /*sigma:chokepoint-injection-triggered-call*/ (verdict='block' AND owasp='LLM01')\nUNION ALL\nSELECT 'Credential in a judged call, or an egress refusal', count(*) FROM events WHERE $__timeFilter(ts) AND /*sigma:chokepoint-sensitive-egress-attempt*/ ((verdict='block' AND owasp='LLM02') OR arguments='[REDACTED: sensitive content detected in arguments]')\nUNION ALL\nSELECT 'Blocked call retried to the repeat cap', count(*) FROM events WHERE $__timeFilter(ts) AND /*sigma:chokepoint-blocked-then-retry-loop*/ (verdict='block' AND rule_id LIKE 'limit:max\\_repeated\\_identical\\_calls' ESCAPE '\\')\nUNION ALL\nSELECT 'Run cap hit', count(*) FROM events WHERE $__timeFilter(ts) AND /*sigma:chokepoint-rate-cap-hit*/ (verdict='block' AND rule_id LIKE 'limit:%' ESCAPE '\\')\nUNION ALL\nSELECT 'Outbound call refused after untrusted content', count(*) FROM events WHERE $__timeFilter(ts) AND /*sigma:chokepoint-taint-egress-refusal*/ (rule_id LIKE 'taint:%' ESCAPE '\\')"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "title": "What decided, and how often",
+      "description": "rule_id namespaces, from the schema: a bare id is a rule from the policy file; default:on_no_match is deny-by-default answering; limit:* is a per-run cap; proxy:/pep:/hook:* are the enforcement points refusing input they could not judge.",
+      "gridPos": { "h": 9, "w": 8, "x": 0, "y": 13 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "chokepoint-events" },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" } } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "rule_id" }, "properties": [{ "id": "custom.width", "value": 200 }] },
+          { "matcher": { "id": "byName", "options": "verdict" }, "properties": [{ "id": "custom.width", "value": 75 }] },
+          { "matcher": { "id": "byName", "options": "owasp" }, "properties": [{ "id": "custom.width", "value": 70 }] },
+          { "matcher": { "id": "byName", "options": "calls" }, "properties": [{ "id": "custom.width", "value": 65 }] }
+        ]
+      },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "calls", "desc": true }] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "chokepoint-events" },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT rule_id, verdict, coalesce(owasp, '-') AS owasp, count(*) AS calls FROM events WHERE $__timeFilter(ts) AND rule_id IS NOT NULL GROUP BY rule_id, verdict, owasp ORDER BY calls DESC LIMIT 15"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "Refused calls",
+      "description": "block and ask, newest first. `server` is the upstream the call was JUDGED under (null where the enforcement point claims no identity — a native tool, or a proxy started without --server-name), shown as (none) so an empty cell is never mistaken for a rendering fault.",
+      "gridPos": { "h": 9, "w": 16, "x": 8, "y": 13 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "chokepoint-events" },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" } } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "ts" }, "properties": [{ "id": "custom.width", "value": 160 }] },
+          { "matcher": { "id": "byName", "options": "agent_id" }, "properties": [{ "id": "custom.width", "value": 105 }] },
+          { "matcher": { "id": "byName", "options": "server" }, "properties": [{ "id": "custom.width", "value": 90 }] },
+          { "matcher": { "id": "byName", "options": "tool" }, "properties": [{ "id": "custom.width", "value": 115 }] },
+          { "matcher": { "id": "byName", "options": "verdict" }, "properties": [{ "id": "custom.width", "value": 70 }] },
+          { "matcher": { "id": "byName", "options": "rule_id" }, "properties": [{ "id": "custom.width", "value": 225 }] }
+        ]
+      },
+      "options": { "showHeader": true },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "chokepoint-events" },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT ts, agent_id, coalesce(server, '(none)') AS server, tool, verdict, rule_id, reason FROM events WHERE $__timeFilter(ts) AND verdict IN ('block', 'ask') ORDER BY ts DESC LIMIT 50"
+        }
+      ]
+    }
+  ]
+}

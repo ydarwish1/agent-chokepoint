@@ -1,0 +1,55 @@
+title: Agent-Chokepoint - Injection-Class Tool Call Blocked
+id: 4b0e4e46-9c1d-4f2a-b6d3-4a1c0d9e21aa
+status: experimental
+description: >
+  A tool call was refused by a policy rule mapped to OWASP LLM01 - the
+  injection class this gateway exists to stop: a destructive or out-of-policy
+  call of the kind an indirect prompt injection in a tool result produces
+  (curl|sh, a read outside scope, an uninspectable input channel, an
+  unresolvable path). Deliberately NOT fired by deny-by-default noise:
+  default:on_no_match carries no OWASP mapping (owasp is null there), so this
+  alert is a rule the policy author wrote firing, not the noise floor. Allowed
+  calls never fire it whatever their mapping.
+  READ THE rule_id BEFORE THE TITLE. Since schema 1.4.0 this selection also
+  catches every taint: refusal, because those carry LLM01 too - and a taint
+  refusal is NOT an injection detection. Nothing inspected the consumed content;
+  the run is marked on the SOURCE tool, so a run can be tainted by an entirely
+  benign page, and under egress_mode all_egress a bare `pwd` lands here. For
+  those events the correct alert text is "refused an outbound call from a run
+  that had read untrusted content", never "blocked a prompt injection" - see the
+  rule_id description in the event schema.
+references:
+  - https://genai.owasp.org/llmrisk/llm01-prompt-injection/
+  - https://raw.githubusercontent.com/ydarwish1/agent-chokepoint/main/telemetry/event-schema.json
+author: Agent-Chokepoint
+date: 2026-08-04
+modified: 2026-08-05
+logsource:
+  product: agent-chokepoint
+  service: decisions
+detection:
+  selection:
+    verdict: block
+    owasp: LLM01
+  condition: selection
+fields:
+  - ts
+  - agent_id
+  - server
+  - tool
+  - rule_id
+  - reason
+falsepositives:
+  - A user legitimately asking the agent for an action the policy forbids. The
+    enforcement is real either way; triage on volume per agent_id and on which
+    rule_id fired.
+  - >
+    A refusal under the taint: prefix - taint:secret-egress,
+    taint:new-domain-egress, taint:egress. Real enforcement, wrong headline: the
+    run read something the operator called untrusted and then tried to send
+    something out, which is not the claim this title makes. Under all_egress
+    every outbound call after the first source fetch lands here, benign ones
+    included. Split them out by rule_id prefix before you page anyone.
+level: high
+tags:
+  - owasp.llm01

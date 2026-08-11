@@ -1,0 +1,41 @@
+title: Agent-Chokepoint - Blocked Call Retried Until The Repeat Cap Tripped
+id: 2d9c7e58-1a44-4b3e-8c0d-6f5a9b2e17cc
+status: experimental
+description: >
+  An agent repeated the identical (tool, arguments) call until the gateway's
+  own repeat counter blocked it - rule limit:max_repeated_identical_calls,
+  which the proxy trips on the Nth identical call of a run and which counts
+  blocked attempts too, precisely so a blocked-then-retry loop cannot grind
+  forever. This is the retry-loop pattern with the counting already done at
+  the enforcement point: one event here means the identical call was already
+  made max_repeated_identical_calls times before it. To see WHAT was being
+  retried, read the events preceding this one in the same `run_id` (D-025) -
+  they carry the rule that was refusing the call. Group by run_id rather than
+  by agent_id: agent_id is unauthenticated configuration and several agents
+  can share one value, which would merge unrelated traffic into a phantom loop.
+references:
+  - https://raw.githubusercontent.com/ydarwish1/agent-chokepoint/main/telemetry/event-schema.json
+author: Agent-Chokepoint
+date: 2026-08-04
+logsource:
+  product: agent-chokepoint
+  service: decisions
+detection:
+  selection:
+    verdict: block
+    rule_id: 'limit:max_repeated_identical_calls'
+  condition: selection
+fields:
+  - ts
+  - agent_id
+  - run_id
+  - server
+  - tool
+  - arguments
+falsepositives:
+  - A poorly written but benign client retrying a failed call without backoff.
+    The loop is real either way; what differs is intent - read the blocked
+    rule on the preceding events in the same run_id.
+level: high
+tags:
+  - owasp.llm10

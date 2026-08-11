@@ -1,0 +1,57 @@
+# The dashboard stack. Off-the-shelf Grafana over off-the-shelf Postgres — the
+# repo contributes a table definition, a loader, a datasource and a dashboard
+# model, and no UI code at all. This project ships no web frontend; the
+# dashboard is the one carved-out exception, and this is what keeps that
+# carve-out narrow.
+#
+# It renders the committed sample events in ../samples/ (or any decisions.jsonl
+# a real gateway wrote — same loader). See README.md in this directory.
+#
+# NOTHING SECRET IS COMMITTED HERE. The password comes from the environment and
+# has no default: `docker compose up` fails loudly rather than starting with a
+# credential someone published in a git repo.
+name: chokepoint-telemetry
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: chokepoint
+      POSTGRES_DB: chokepoint
+      POSTGRES_PASSWORD: ${CHOKEPOINT_PG_PASSWORD:?export CHOKEPOINT_PG_PASSWORD first - see README.md}
+    volumes:
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    # No published port on purpose: only Grafana talks to it, over the compose
+    # network. Nothing here should be reachable from outside this machine.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chokepoint -d chokepoint"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  grafana:
+    image: grafana/grafana:12.3.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      # Bound to loopback, not 0.0.0.0. A dashboard rendering security decisions
+      # is not something to expose by accident on a shared network.
+      - "127.0.0.1:3001:3000"
+    environment:
+      # Read by grafana/provisioning/datasources/postgres.yml via $__env{}.
+      CHOKEPOINT_PG_PASSWORD: ${CHOKEPOINT_PG_PASSWORD:?export CHOKEPOINT_PG_PASSWORD first - see README.md}
+      # Anonymous access, login form off: this stack exists to render a local
+      # file of sample events on a loopback port. It is a viewer, not a
+      # deployment target, and an auth flow here would be ceremony rather than
+      # security. Do not copy this block into anything that leaves your machine.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: dark
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
