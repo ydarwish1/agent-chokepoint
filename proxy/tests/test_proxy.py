@@ -1406,7 +1406,7 @@ class TestTheDecisionLogLineIsBounded:
     so an agent whose every call the gateway REFUSES still chose how many bytes
     the gateway appended to its audit trail, and refusal made it neither smaller
     nor slower. In the shipped chart that trail is ``decisions.jsonl`` on the
-    ``sandbox`` emptyDir (``deploy/demo/gateway_driver.py:591``); the chart half
+    ``sandbox`` emptyDir (``deploy/demo/gateway_driver.py:590``); the chart half
     of this entry bounds the FILE and this bounds the LINE, and both are needed
     because a bounded line repeated without limit still fills a disk.
 

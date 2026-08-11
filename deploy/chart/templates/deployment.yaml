@@ -164,7 +164,7 @@ spec:
             # readOnlyRootFilesystem: true leaves no writable /tmp. The demo
             # drivers this deployment runs use tempfile.TemporaryDirectory
             # (proxy/demo/run_demo.py:117, pep/demo/two_doors_paths.py:799,
-            # hooks/demo/side_by_side.py:920), which fails without one.
+            # hooks/demo/side_by_side.py:927), which fails without one.
             - name: tmp
               mountPath: /tmp
       volumes:
@@ -174,7 +174,7 @@ spec:
             defaultMode: 0444
         # CP-05, the deployment half. This volume is the driver's --state-dir,
         # and the proxy's --log-file lands on it as decisions.jsonl
-        # (deploy/demo/gateway_driver.py:591) beside proxy-stderr.log and the
+        # (deploy/demo/gateway_driver.py:590) beside proxy-stderr.log and the
         # upstream's EXECUTED.log. Unbounded, it was a write amplifier pointed
         # at the node: one REFUSED tools/call used to append its arguments in
         # full, so a single 8 MiB argument bought an 8 MiB audit line from a

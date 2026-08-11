@@ -308,7 +308,7 @@ def _within_the_line_bound(event: dict[str, Any]) -> dict[str, Any]:
     gateway REFUSED — never forwarded, ``block / default:on_no_match`` — still
     chose how many bytes the gateway appended to its audit trail. In the shipped
     chart that trail is ``decisions.jsonl`` on an emptyDir
-    (``deploy/demo/gateway_driver.py:591``), which is the other half of the
+    (``deploy/demo/gateway_driver.py:590``), which is the other half of the
     entry.
 
     The first attempt bounded the arguments per STRING, with the hook's own
