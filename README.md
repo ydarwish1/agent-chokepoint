@@ -1,5 +1,7 @@
 # Agent-Chokepoint
 
+> **Prototype mode.** This project is a prototype under active development. The engine, both enforcement points, the policy loader and the telemetry are built and tested, but the policy format, the event schema and the interfaces can still change between updates, and none of it has been through a production deployment. What is coming next is in the [Roadmap](#roadmap).
+
 A security checkpoint that sits between an AI agent and its tools. Every action the agent tries to take passes through one gate, gets checked against rules you wrote, and comes back as **allow**, **block**, or **ask a human first**, with a log the security team can actually use.
 
 ![A flow diagram of what happens to one tool call. On the left, two agents: Claude Code making Read, Write, Edit, Bash and WebFetch calls, and any MCP client making tools/call and tools/list. Each reaches its own enforcement point, the PreToolUse hook which runs one process per call, and the MCP proxy which holds the whole session. Both funnel into a single decision engine, described as a pure function with no network, no files and no state. The policy file feeds it from above, deny by default, a call matching nothing is blocked. Run state feeds it from below, tagged proxy only, holding the taint mark and the call and repeat caps. Three verdicts leave the engine. Allow, in green: the call runs untouched and reaches the file, shell, host or MCP server it named. Ask, in amber: a human decides, so Claude Code raises its own permission prompt, while the proxy has no approval channel wired and there it fails closed and refuses. Block, in red: refused, and the error carries the id of the rule that refused it. Every decision writes one event to an audit trail of published schema, Sigma detection rules and a Grafana dashboard, where an allow is logged as loudly as a block. A dashed line loops from allow all the way back to run state, showing that when a result comes back from a source the policy calls untrusted the run is marked, and a call that was allowed a moment ago can be refused the next time it is made.](docs/diagram/architecture.png)
@@ -18,7 +20,7 @@ run the verification step, and show me the output.
 
 *One real command, recorded live and never edited. The only thing off camera is activating the virtualenv first, and the recipe below covers that. Watch what happens: the same call is **allowed** in a clean session, **refused** right after the session reads a page carrying a hidden instruction, and with no gateway in the path at all, both calls sail through. One honest note about the fetch: the URL on screen is real, but nothing here touches the network. The demo's own server answers with the committed file [`proxy/demo/poisoned-page.txt`](proxy/demo/poisoned-page.txt), and the recording's header says so. The recording is regenerated, never retouched: [`docs/demo/tainted-run.tape`](docs/demo/tainted-run.tape) is the recipe and `vhs docs/demo/tainted-run.tape` re-records it. **It does not show an injection stopped end to end.** No AI model is in the loop deciding to obey the page, and [§4 of the threat model](docs/THREAT-MODEL.md) explains why that distinction matters.*
 
-> **Where it stands.** This is a working prototype, built and tested: the decision engine, the policy loader, the MCP proxy, the Claude Code hook, a hardened Kubernetes deployment, the telemetry (published event schema, Sigma detection rules, dashboard), the sensitive-data egress rule, and taint tracking. You can run the demos below right now, and the recording above is one of them. The [threat model](docs/THREAT-MODEL.md) and [limitations](docs/LIMITATIONS.md) are written.
+> **Where it stands.** These parts are built and tested: the decision engine, the policy loader, the MCP proxy, the Claude Code hook, a hardened Kubernetes deployment, the telemetry (published event schema, Sigma detection rules, dashboard), the sensitive-data egress rule, and taint tracking. You can run the demos below right now, and the recording above is one of them. The [threat model](docs/THREAT-MODEL.md) and [limitations](docs/LIMITATIONS.md) are written.
 >
 > **Two things this project deliberately does not claim.** Novelty: comparable gateways exist, eight of them were studied in detail before any of this was built, and that research shaped the design rather than serving as a competitive pitch. And effectiveness numbers, because it has not measured any. More on both below.
 
@@ -202,9 +204,16 @@ docs/        threat model, limitations, attack coverage, disclosure
 
 ## Roadmap
 
-Everything described above is built, tested, and working today.
+Everything described above is built, tested, and working today. The project is in prototype mode, and the rest of this section is where it goes next. None of it exists yet.
 
-This is a prototype under active development. The list below is where it could go next. These are ideas, not commitments: none of it exists yet, none of it is scheduled, and it will change as the project grows.
+### Planned for the next updates
+
+- **A dashboard the gateway serves itself, with asks per session as the headline metric.** Today the numbers live in a Grafana dashboard provisioned from this repo, which is a good surface for a security team and a poor one for the first hour after you install it. The plan is a dashboard that ships with the gateway and leads with a single number: how many times per session it had to stop and ask a human. That figure is the honest read on whether a policy is tuned. Near zero and the policy is rubber-stamping, constantly high and it is in the way, and watching it move after a policy edit is the fastest feedback an operator can get. Blocks, allows, taint marks and the rules doing the deciding sit underneath it.
+- **The front end, integrated.** The repo ships no interface of its own today. The plan is one, wired into the gateway rather than bolted on beside it: the dashboard above, a live feed of decisions as they land, the policy readable and editable in place with the same strict loader validating every save, and the pending `ask` calls as an inbox a human can actually answer from.
+
+### Ideas beyond that
+
+These are ideas, not commitments: none of them is scheduled, and the list will change as the project grows.
 
 - **A real approval flow for `ask`.** Today the proxy fails closed on `ask` because no approval channel is wired. The natural next step is approval requests delivered where the operator already is, a CLI prompt or Slack or Telegram, with the call held until a human answers.
 - **More enforcement points.** The engine and enforcement split exists exactly for this. Adapters for other agent frameworks, and a generic HTTP tool-calling proxy, would give non-MCP agents the same gateway without touching the engine.
@@ -213,6 +222,10 @@ This is a prototype under active development. The list below is where it could g
 - **A dry-run mode.** Run the gateway in log-only mode first, see what *would* have been blocked before turning enforcement on, and tune the policy against real traffic instead of guesses.
 - **Finer-grained taint.** Today taint marks the whole session and offers three strictness levels. Finer grades are possible: per-source trust levels, remembering what was read, rules conditioned on both.
 - **Deeper SIEM integration.** The Sigma rules and published schema are the foundation. Ready-made pipelines and guides for common SIEM stacks would shorten the path from "deployed" to "watched".
+- **The tools the hook does not judge yet.** `Grep`, `Glob`, `Task` and the other Claude Code built-ins outside the mapping table get no verdict and no event today. Closing that gap means giving the policy a vocabulary for search and for subagent calls, which is a policy design problem before it is a coding one.
+- **Policy linting and policy tests.** A policy is code, so it should be testable. A linter that flags rules which can never match, or which are wider than they read, plus a way to write cases that assert your own policy's verdicts and run them in CI alongside your other tests.
+- **A tamper-evident audit trail.** The decision events are the record of what an agent did. Hash-chaining them, so a deleted or edited event is detectable rather than invisible, is what makes that record hold up on the day someone needs it to.
+- **One gateway, many agents.** Per-agent policies and per-agent identity carried in the events, so a team can run a single chokepoint in front of a fleet instead of one per laptop.
 - **Numbers, done honestly.** If this project ever publishes effectiveness figures, they will come with a public corpus, a stated method, and a date, so anyone can re-run them. Until that exists, there are none. See the note above.
 
 ## Prior art
