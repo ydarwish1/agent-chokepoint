@@ -568,7 +568,7 @@ class Results:
 
 
 def header(run_id: str, results: Results) -> None:
-    say("Agent-Chokepoint — acceptance: the hardened deployment, measured")
+    say("Agent-Chokepoint — cluster acceptance: the hardened deployment, measured")
     say("=" * 78)
     say()
     say("deploy/chart claims a hardened Kubernetes deployment. This transcript is the")
@@ -782,7 +782,7 @@ def section_calls(results: Results, run_id: str) -> None:
 
 
 def section_b002(results: Results) -> None:
-    rule("D — B-002 measured INSIDE the container, not where the policy was written")
+    rule("D — B-002 measured INSIDE the container, not on the host")
     say()
     say("policy/policy.example.yaml was authored on a case-INsensitive macOS volume where")
     say("/var and /tmp carry a /private indirection; it is loaded in a case-sensitive")

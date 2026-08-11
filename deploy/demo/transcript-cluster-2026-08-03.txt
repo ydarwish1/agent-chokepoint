@@ -1,3 +1,10 @@
+*** EDITED FOR PUBLICATION. This file is the output of a real run, with two
+*** changes made before release and no others: absolute paths on the machine
+*** that ran it were replaced with <repo root>, and this title and the
+*** section D heading were reworded. `cluster_acceptance.py` was changed to
+*** print the same words, so a fresh run reproduces this text. No measured
+*** value, verdict or count was touched.
+
 Agent-Chokepoint — cluster acceptance: the hardened deployment, measured
 ==============================================================================
 

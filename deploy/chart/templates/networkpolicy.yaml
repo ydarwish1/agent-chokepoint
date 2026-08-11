@@ -7,7 +7,7 @@ denies all traffic of that type.
 The egress allow-list is EMPTY because the workload genuinely needs no network,
 not as a shortcut. Verified: no socket/bind/listen/connect anywhere in
 proxy|engine|policy|pep|hooks — the sole network-shaped import is
-urllib.parse.urlsplit (string parsing) at engine/predicates.py:37. The demo
+urllib.parse.urlsplit (string parsing) at engine/predicates.py:41. The demo
 upstream needs none either: fetch_url is simulated and run_command is recorded,
 never executed (proxy/demo/upstream_server.py:33).
 

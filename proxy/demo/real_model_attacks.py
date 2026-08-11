@@ -106,9 +106,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 #: names a directory that exists on a laptop that ran `python -m venv .venv` and
 #: nowhere else: CI installs with `pip install -e .` and creates no `.venv`, and
 #: neither does the README quickstart. Every replay leg therefore died of
-#: `FileNotFoundError` before it could assert anything, taking down eight tests
-#: in `tests/test_model_run_records.py` — five in `TestReplayMachinery`, three in
-#: `TestTheReachMatcher`, measured on a clean checkout — while a local run with
+#: `FileNotFoundError` before it could assert anything, taking down every test
+#: in `TestReplayMachinery` and `TestTheReachMatcher` in
+#: `tests/test_model_run_records.py` at the time — while a local run with
 #: a `.venv` present stayed green. `ci.yml` runs the same job on 3.10 and 3.14
 #: and neither leg creates one, so the outage was not version-specific. Every
 #: other harness here already spelled it `sys.executable` — `tainted_run.py` and

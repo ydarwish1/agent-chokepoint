@@ -4,7 +4,9 @@
 
 ## Editing `policy.example.yaml` — read this first
 
-**It is pinned byte-for-byte by three committed model-run records.** Each one stores the SHA-256 of the exact file text the recorded run went against, and `tests/test_model_run_records.py::TestCommittedRecords::test_the_policy_is_the_shipped_file_or_one_scalar_off_it` re-derives it. **Any** edit breaks those three tests — including a comment, including whitespace — because the record's claim is about the file that ran, not about the behaviour it produced.
+**Three committed model-run records pin the SHA-256 of this file.** Each stores the digest of the exact file text the recorded run went against, and `tests/test_model_run_records.py::TestCommittedRecords::test_the_policy_is_the_shipped_file_or_one_scalar_off_it` re-derives it. **Any** edit turns those tests red — including a comment, including whitespace — because the digest is over bytes, not over behaviour.
+
+That is not a reason never to edit the file. It is a reason to be deliberate: a change that alters a RULE invalidates the records, and they have to be re-captured or retired. A comment-only change does not, and the pins may be re-derived — but only after proving the change was comment-only, by parsing both versions and showing the loaded policy is identical. Re-deriving a pin without that proof turns a measurement into an assertion.
 
 That is the guard working, and the failure message says so plainly (*"this record claims the shipped policy, unmodified, and the file has changed"*). It is written here because the constraint is invisible from inside the file, and it is the reason this README exists: documentation that would naturally have gone in a YAML comment goes here instead. Discovered 2026-08-06 while adding the `tool_listing:` documentation below; five tests went red on a comment block.
 
