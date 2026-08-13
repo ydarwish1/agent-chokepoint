@@ -9,12 +9,11 @@
 FROM python:3.13-slim
 
 # Runtime dependencies ONLY — the two from pyproject.toml:20-23, copied verbatim.
-# We do NOT `pip install .`: pyproject.toml:38 lists packages explicitly and
-# non-recursively as ["engine","policy","proxy","hooks","pep"], with no
-# package-data, no include-package-data and no MANIFEST.in. A wheel would
-# therefore ship WITHOUT proxy/demo/upstream_server.py, proxy/demo/run_demo.py
-# and policy/policy.example.yaml — the exact files the acceptance workload runs.
-# The source tree is COPYed instead and reached via PYTHONPATH.
+# We do NOT `pip install .` for the image payload: even with package-data for
+# `policy/*.yaml`, a wheel still omits `proxy/demo/upstream_server.py` and
+# `proxy/demo/run_demo.py` — the files the acceptance workload runs. The source
+# tree is COPYed instead and reached via PYTHONPATH. Runtime deps still match
+# pyproject.toml.
 RUN pip install --no-cache-dir "mcp>=2.0,<2.1" "PyYAML>=6"
 
 # PATH is PINNED, not inherited. If PATH is absent from the environment CPython

@@ -187,6 +187,10 @@ def test_an_unlistable_parent_is_refused(root: Path):
 # ---------------------------------------------------------------- resolution
 
 
+@pytest.mark.skipif(
+    Path("/workspace").exists(),
+    reason="this test's premise is that /workspace is absent (true on CI; this host is /workspace)",
+)
 def test_a_wholly_non_existent_absolute_path_is_the_identity():
     """Why the existing corpus survives this change untouched.
 
@@ -196,9 +200,19 @@ def test_a_wholly_non_existent_absolute_path_is_the_identity():
     stops at the first missing component, so canonicalization is the identity
     on all of them and no existing expectation moves.
     """
-    assert not Path("/workspace").exists(), "this test's premise is that /workspace is absent"
     assert canonical_path("/workspace/notes.txt") == "/workspace/notes.txt"
     assert canonical_path("/workspace/.ssh/id_rsa") == "/workspace/.ssh/id_rsa"
+
+
+def test_a_missing_absolute_path_is_the_identity():
+    """The same mechanism as the ``/workspace`` corpus, on a name this host
+    cannot possibly have. The skip above is environment-shaped; this one always
+    runs.
+    """
+    missing = "/this-path-must-not-exist-for-pep-canonicalize-tests"
+    assert not Path(missing).exists()
+    assert canonical_path(missing + "/notes.txt") == missing + "/notes.txt"
+    assert canonical_path(missing + "/.ssh/id_rsa") == missing + "/.ssh/id_rsa"
 
 
 def test_a_symlink_escape_is_resolved_to_its_target(tree: Path):

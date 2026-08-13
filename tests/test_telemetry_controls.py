@@ -696,26 +696,15 @@ def test_the_published_schema_names_every_redaction_marker_the_doors_can_emit():
     """A marker is a literal string the schema tells a detection to match exactly,
     so the set of them is a published contract — D-049, schema 1.6.0.
 
-    Read off the two doors' own constants rather than restated here: a test that
-    spelled the markers itself would be a third copy that can drift from both.
-    Both doors are asserted, because the schema promises ONE key set for both and
-    a marker only one door emits would make that false.
+    Read off :mod:`pep.log` rather than restated here: both doors import those
+    constants, so a third copy in this file would be free to drift from both.
     """
-    from hooks.chokepoint_hook import (
-        HIDDEN_CONTEXT_REDACTION_MARKER as hook_hidden,
-        HIDDEN_CONTEXT_TOOL_NAME_REDACTION_MARKER as hook_hidden_name,
-        REDACTION_MARKER as hook_credential,
-        TOOL_NAME_REDACTION_MARKER as hook_name,
+    from pep.log import (
+        HIDDEN_CONTEXT_REDACTION_MARKER,
+        HIDDEN_CONTEXT_TOOL_NAME_REDACTION_MARKER,
+        REDACTION_MARKER,
+        TOOL_NAME_REDACTION_MARKER,
     )
-    from proxy.server import (
-        HIDDEN_CONTEXT_REDACTION_MARKER as proxy_hidden,
-        HIDDEN_CONTEXT_TOOL_NAME_REDACTION_MARKER as proxy_hidden_name,
-        TOOL_NAME_REDACTION_MARKER as proxy_name,
-    )
-
-    assert (hook_hidden, hook_name, hook_hidden_name) == (
-        proxy_hidden, proxy_name, proxy_hidden_name), (
-        "the two doors' markers have drifted; one grep for '[REDACTED:' must find both")
 
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     event = schema["$defs"]["decisionEvent"]["properties"]
@@ -724,10 +713,10 @@ def test_the_published_schema_names_every_redaction_marker_the_doors_can_emit():
     # to that document, so this list and that sentence move together.
     missing = [
         marker for marker, field in (
-            (hook_credential, "arguments"),
-            (hook_hidden, "arguments"),
-            (hook_name, "tool"),
-            (hook_hidden_name, "tool"),
+            (REDACTION_MARKER, "arguments"),
+            (HIDDEN_CONTEXT_REDACTION_MARKER, "arguments"),
+            (TOOL_NAME_REDACTION_MARKER, "tool"),
+            (HIDDEN_CONTEXT_TOOL_NAME_REDACTION_MARKER, "tool"),
         )
         if marker not in event[field]["description"]
     ]

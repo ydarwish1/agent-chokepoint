@@ -49,3 +49,29 @@ def test_license_is_the_spdx_string_not_the_deprecated_table():
         "a `License ::` trove classifier cannot coexist with a PEP 639 license "
         "expression - setuptools refuses to build with both"
     )
+
+
+def test_console_scripts_are_declared():
+    """Entry points are the install; without them init cannot name chokepoint-hook."""
+    body = _uncommented(PYPROJECT.read_text(encoding="utf-8"))
+    assert 'chokepoint-hook = "hooks.chokepoint_hook:main"' in body
+    assert 'chokepoint-proxy = "proxy.__main__:main"' in body
+    assert 'chokepoint-init = "hooks.init:main"' in body
+
+
+def test_policy_yaml_is_declared_package_data():
+    """A wheel without the pack cannot run chokepoint-init (Dockerfile used to COPY instead)."""
+    body = _uncommented(PYPROJECT.read_text(encoding="utf-8"))
+    assert "[tool.setuptools.package-data]" in body
+    assert 'policy = ["policy.example.yaml", "packs/*.yaml"]' in body
+
+
+def test_the_installed_pack_is_readable_as_package_data():
+    """The declaration above is load-bearing only if the files are actually there."""
+    from importlib.resources import files
+
+    pack = files("policy") / "packs" / "coding-agent.yaml"
+    example = files("policy") / "policy.example.yaml"
+    assert pack.is_file()
+    assert example.is_file()
+    assert "/ABSOLUTE/PATH/TO/PROJECT" in pack.read_text(encoding="utf-8")

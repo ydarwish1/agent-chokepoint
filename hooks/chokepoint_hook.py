@@ -63,7 +63,6 @@ import os
 import sys
 import time
 from dataclasses import replace
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -90,19 +89,14 @@ if __package__ in (None, ""):
 # the venv path in settings.json, or the venv is rebuilt after a Python upgrade.
 _IMPORT_ERROR: Exception | None = None
 try:
-    from engine import (  # noqa: E402
-        ToolCall,
-        Verdict,
-        contains_hidden_context,
-        contains_sensitive,
-        decide,
-    )
-    # B-111: the event builder's walk shares the engine's depth bound rather
-    # than picking its own, so the log can never omit a region the scan saw or
-    # carry one it did not. Imported, not restated, for D-036 Decision 1's
-    # reason — two copies of a bound are two things free to drift.
-    from engine.predicates import _MAX_SCAN_DEPTH  # noqa: E402
+    from engine import ToolCall, Verdict, decide  # noqa: E402
     from pep import RULE_UNRESOLVABLE_PATH, UnresolvablePath, canonicalized_arguments  # noqa: E402
+    from pep.log import (  # noqa: E402
+        decision_event,
+        loggable_arguments,
+        loggable_reason,
+        loggable_tool,
+    )
     from policy import PolicyError, load_policy  # noqa: E402
 
     # The engine says "block"; the hook protocol spells the same answer "deny".
@@ -112,20 +106,6 @@ try:
     # `Verdict`: if the import above failed there is no table to build, and
     # `main()` exits 2 before any code could reach it.
     PERMISSION_DECISION = {Verdict.ALLOW: "allow", Verdict.BLOCK: "deny", Verdict.ASK: "ask"}
-
-    # What the event says where `_truncated` stopped descending (B-111). Its own
-    # marker rather than a silent omission: an operator reading the event has to
-    # be able to tell "this subtree was empty" from "this subtree was never
-    # inspected", and the second is a fact about the gateway's own coverage. It
-    # carries the bound so a reader does not have to know the constant.
-    #
-    # Built inside the guard for the same reason the table above is: it
-    # interpolates `_MAX_SCAN_DEPTH`, so at module scope a failed import would
-    # raise NameError before `main()` exists to catch it — CPython exits 1, and
-    # exit 1 in this protocol means "run the tool anyway". That is the precise
-    # fail-open this guard was written to prevent, and it would have been
-    # introduced by the fix for a fail-CLOSED defect.
-    DEPTH_BOUND_MARKER = f"<not inspected: nesting past the {_MAX_SCAN_DEPTH}-level scan bound>"
 except Exception as exc:  # noqa: BLE001 — deliberate: any import failure fails closed
     _IMPORT_ERROR = exc
 
@@ -160,47 +140,6 @@ NATIVE_TOOLS: dict[str, tuple[str, str, str]] = {
     "Bash": ("run_command", "command", "command"),
     "WebFetch": ("fetch_url", "url", "url"),
 }
-
-# Longest string written into a decision event before it is replaced by a
-# summary. See :func:`_loggable_arguments` for why this is logging-only.
-MAX_LOGGED_STRING = 256
-
-# Byte-identical to proxy/server.py's marker: one grep finds redactions from
-# both enforcement points.
-REDACTION_MARKER = "[REDACTED: sensitive content detected in arguments]"
-
-# The same discipline for material the operator DECLARED rather than for a
-# published credential format (D-049). Its own marker because the two state
-# different facts about what was in the arguments, and byte-identical to
-# `proxy/server.py:HIDDEN_CONTEXT_REDACTION_MARKER` for the reason the line
-# above is byte-identical to its neighbour.
-HIDDEN_CONTEXT_REDACTION_MARKER = "[REDACTED: declared hidden context detected in arguments]"
-
-# The same, for the tool NAME (B-015). Byte-identical to
-# `proxy/server.py:TOOL_NAME_REDACTION_MARKER` for the same reason the line
-# above is byte-identical to its neighbour: `hooks/demo/side_by_side.py`
-# compares the two doors' decision events, and one grep for `[REDACTED:` has to
-# find every redaction either door can emit.
-#
-# Duplicated rather than imported, which is this repo's convention for the
-# marker above and is deliberate here too: `hooks/` and `proxy/` do not import
-# each other (a hook that pulled in the MCP SDK to log a string would be absurd),
-# and `pep/` — the module both doors DO share — states in its own docstring that
-# it imports nothing else in this repo, an invariant `pep/tests/test_canonicalize.py`
-# asserts in a subprocess. The scan below needs `engine.contains_sensitive`, so
-# `pep/` cannot hold it without breaking that. Giving the markers a third home
-# is a wider design change than this file makes on its own.
-TOOL_NAME_REDACTION_MARKER = "[REDACTED: sensitive content detected in tool name]"
-
-# The declared-material twin (B-116, schema 1.7.0), byte-identical to
-# `proxy/server.py:HIDDEN_CONTEXT_TOOL_NAME_REDACTION_MARKER` for the reason
-# every marker in this file is: one grep for `[REDACTED:` has to find every
-# redaction either door can emit, and `hooks/demo/side_by_side.py` compares
-# the two doors' events.
-HIDDEN_CONTEXT_TOOL_NAME_REDACTION_MARKER = (
-    "[REDACTED: declared hidden context detected in tool name]"
-)
-
 
 class UnparseableInput(ValueError):
     """Input this hook refuses to judge.
@@ -370,201 +309,6 @@ def _translate(tool_name: str, tool_input: Mapping[str, Any], agent_id: str) -> 
     return ToolCall(tool=engine_tool, arguments=arguments, agent_id=agent_id)
 
 
-def _truncated(value: Any) -> Any:
-    """Every string longer than :data:`MAX_LOGGED_STRING`, replaced by its length.
-
-    Walks mappings and sequences because the payloads that need it are nested.
-    Keys are left alone: they name fields, and a field name long enough to
-    matter is not a thing the captured payloads contain.
-
-    **Bounded and iterative, and both halves are B-111.** This function used to
-    recurse without a bound, and it is called from :func:`_loggable_arguments`
-    while BUILDING the decision event — after ``decide()`` has already returned
-    a verdict. So a benign tool call nested about a thousand levels raised
-    ``RecursionError`` between the verdict and the event, ``main()`` caught it,
-    and the hook exited 2: a **false BLOCK on legitimate input**, with the call
-    absent from the audit trail entirely because the crash happened before the
-    event was written. B-014 bounded the ENGINE's walk at
-    ``engine/predicates.py:_MAX_SCAN_DEPTH`` and landed in that file only; this
-    door inherited none of it.
-
-    Bounding alone would not have been enough and that is worth stating, because
-    it is the reason this is iterative rather than a recursion with a depth
-    counter: the bound is 1000 and CPython's default recursion limit is 1000, so
-    a recursive walk bounded at the same number still dies — measured, the crash
-    began at depth **993**, not 1000, with the difference being the frames
-    already on the stack under ``main()``. The engine's walk is iterative for
-    exactly this reason and this one now matches its shape as well as its bound.
-
-    **The bound is the engine's own, imported rather than restated**, and the
-    two coinciding is the property worth having: ``_strings_in`` yields a string
-    at any depth but does not DESCEND into a container at or past the bound, and
-    this walk writes a string at any depth but replaces a container at or past
-    the bound with :data:`DEPTH_BOUND_MARKER`. So the region the log omits is
-    exactly the region the scan could not see — **no string the scan missed can
-    reach the decision log**, which is the invariant that answers the third case
-    B-111 names. A credential nested past the bound is not seen by
-    ``contains_sensitive`` (so the call is not refused for carrying it, which is
-    §18's residual and unchanged here) and is not written into the event either,
-    where before the fix it would have been, had the walk survived to write it.
-
-    Asserted rather than described: ``hooks/tests/test_hook.py``'s
-    ``TestTheEventBuilderIsBounded`` fires all three of B-111's payloads and
-    ``test_the_log_never_carries_a_string_the_scan_could_not_see`` states the
-    invariant directly.
-    """
-    root: list[Any] = [None]
-    # (source node, its depth, where to write the result, under which key)
-    stack: list[tuple[Any, int, Any, Any]] = [(value, 0, root, 0)]
-    while stack:
-        node, depth, target, key = stack.pop()
-        if isinstance(node, str):
-            target[key] = (
-                f"<str len={len(node)} truncated>" if len(node) > MAX_LOGGED_STRING else node
-            )
-        elif isinstance(node, Mapping):
-            if depth >= _MAX_SCAN_DEPTH:
-                target[key] = DEPTH_BOUND_MARKER
-                continue
-            # Keys are inserted in the source's order before anything is pushed,
-            # so the LIFO stack cannot reorder the event's fields.
-            built: dict[Any, Any] = {k: None for k in node}
-            target[key] = built
-            for k, item in node.items():
-                stack.append((item, depth + 1, built, k))
-        elif isinstance(node, (list, tuple)):
-            if depth >= _MAX_SCAN_DEPTH:
-                target[key] = DEPTH_BOUND_MARKER
-                continue
-            items: list[Any] = [None] * len(node)
-            target[key] = items
-            for index, item in enumerate(node):
-                stack.append((item, depth + 1, items, index))
-        else:
-            target[key] = node
-    return root[0]
-
-
-def _loggable_arguments(arguments: Any, hidden_segments: Any) -> Any:
-    """What the decision event is allowed to say about the arguments.
-
-    Three transformations, and **the order is load-bearing**:
-
-    1. ``contains_sensitive`` runs on the FULL untruncated arguments. Redaction
-       keys off content, not off which rule fired (same reasoning as
-       ``proxy/server.py:_loggable_arguments``): a credential must stay out of
-       the log whatever verdict the call received.
-    1b. ``contains_hidden_context`` runs on the same full arguments, against
-       ``policy.hidden_context.all_segments`` (D-049). Same reasoning again, and
-       the same passed-not-defaulted argument as at the proxy door: a refusal
-       whose point is that this material must not leave must not write it into
-       a file. Second, so a call carrying both is attributed to the credential.
-    2. Only if BOTH come back clean is each long string replaced by a summary.
-
-    Truncating first would let a secret sitting past the cutoff escape the
-    check and land in the log — the log being the one place a security product
-    must not leak. This ordering is what the truncation test proves.
-
-    This affects **logging only**. ``decide()`` receives the full untruncated
-    arguments, so ``args_match_any`` still scans an entire ``Write.content``
-    file body. A future reader will assume the opposite; it is written here
-    because a Claude Code ``Write`` payload carries the whole file and an
-    ``Edit`` payload carries whole ``old_string``/``new_string`` values, which
-    is a size and privacy hazard the proxy never had to face.
-    """
-    if contains_sensitive(arguments):
-        return REDACTION_MARKER
-    if contains_hidden_context(hidden_segments, arguments):
-        return HIDDEN_CONTEXT_REDACTION_MARKER
-    return _truncated(arguments)
-
-
-def _loggable_tool(name: str, hidden_segments: Any) -> str:
-    r"""Never write detected material into the decision log — B-015, B-116, this door.
-
-    The ledger files B-015 against the proxy and its repro is proxy-shaped, but
-    the tool name is an agent-controlled string at BOTH doors and this one wrote
-    it verbatim too. Measured on the pre-fix tree, driving ``run()`` the way
-    ``hooks/tests/test_hook.py`` does and reading the events the hook itself
-    wrote: a ``tool_name`` of ``mcp__probe__read_note_AKIAAAAAAAAAAAAAAAAA``
-    landed in the log in full. **All three** shapes that write an arriving name
-    into a decision event leaked it — a judged MCP call, a name this hook refuses
-    to split, and a policy-error refusal (the policy is loaded before the tool is
-    translated, so even an unmapped native tool is logged by name). The CONTROL
-    in the same run, an ordinary ``mcp__probe__read_note``, was clean, so this
-    was a gap in coverage rather than redaction being off. The three shapes and
-    their three controls are parametrized in ``hooks/tests/test_hook.py``.
-
-    The name is split before it is scanned, and the derivation is
-    ``proxy/server.py:_loggable_tool``'s docstring rather than a second copy of
-    it here: every matcher in ``ARG_MATCHERS`` is ``\b``-anchored and ``_`` is a
-    word character, so a plain ``contains_sensitive(name)`` is False on the
-    ledger's own repro string. Offering every underscore-delimited SUFFIX to the
-    matchers, whole name first, is what catches it. The proxy's approach is
-    reused verbatim on purpose: two doors that redacted by different rules would
-    disagree about the same name, which is the failure ``side_by_side.py`` exists
-    to catch.
-
-    An MCP name arrives here with its ``mcp__<server>__`` prefix still on
-    (``_event`` logs the name as it ARRIVED), and the suffix scan is unaffected
-    by that: the prefix only adds candidates in front of the ones the bare name
-    already produced. A credential in the SERVER half is caught for the same
-    reason.
-
-    **The residual is wider than "welded on with no separator"** (B-045). The
-    reliable case is a credential that ENDS the name: ``mcp__probe__read_AKIA…``
-    is redacted, and the same name with ``_tail`` after it is not, because every
-    candidate is a ``_``-delimited suffix and ``_`` is a word character, so the
-    trailing ``\b`` fails. A credential followed by a NON-word character is still
-    redacted, and a letter fused after it is pattern-dependent — the full measured
-    table, across all four credential families, is in
-    ``proxy/server.py:_loggable_tool``, which is also where the two rejected
-    closures are argued. Measured identically at both doors: the helpers are
-    deliberately the same approach, so they share the residual as well as the
-    coverage, and ``proxy/tests/test_proxy.py::TestToolNameRedactionBoundary``
-    asserts both doors in the same assertion so they cannot drift apart.
-    ``docs/LIMITATIONS.md`` §17 states it for operators.
-
-    Logging only. ``_translate`` and ``decide()`` are handed the real name — a
-    marker string matches no rule, so redacting at the source would change the
-    verdict — and so is the sentence Claude Code shows the operator; see
-    :func:`run`.
-    """
-    segments = name.split("_")
-    candidates = ["_".join(segments[i:]) for i in range(len(segments))]
-    if contains_sensitive(candidates):
-        return TOOL_NAME_REDACTION_MARKER
-    # B-116, and the identical change landed at the proxy in the same edit:
-    # fixing one door and leaving its twin is the B-071 family this filing
-    # names three times. The whole name is offered alongside the suffixes
-    # because a declared segment is prose rather than a `\b`-anchored pattern.
-    if contains_hidden_context(hidden_segments, [name, *candidates]):
-        return HIDDEN_CONTEXT_TOOL_NAME_REDACTION_MARKER
-    return name
-
-
-def _loggable_reason(reason: str, name: str, hidden_segments: Any) -> str:
-    """``reason`` with a redactable tool ``name`` in it replaced by the marker.
-
-    The second surface, and the one that makes redacting the ``tool`` field
-    alone useless: both reason strings this hook can emit quote a tool name back
-    at the reader. ``engine/decide.py`` writes ``no rule matched tool
-    'read_note_AKIA…'`` (:124 and :132), and :func:`_translate` writes ``MCP tool
-    name 'mcp__read_note_AKIA…' does not split into server and tool``. Measured
-    pre-fix: the credential was in ``event["reason"]`` on both legs, so a fix
-    that redacted only the field would have left it one field over in the very
-    same event.
-
-    ``name`` differs between the two: the engine quotes the TRANSLATED name
-    (``mcp__`` prefix stripped) and the refusal quotes the arriving one, so each
-    caller passes the name its own string actually contains. Substituting keeps
-    the sentence readable instead of dropping the explanation, and it is a no-op
-    whenever the name was not redactable.
-    """
-    logged = _loggable_tool(name, hidden_segments)
-    return reason if logged == name else reason.replace(name, logged)
-
-
 def _event(
     *,
     agent_id: str,
@@ -605,25 +349,24 @@ def _event(
     key is present-and-null rather than absent so both doors keep one key set.
 
     ``tool`` and ``reason`` arrive here ALREADY passed through
-    :func:`_loggable_tool` / :func:`_loggable_reason` (B-015) — the same shape
-    ``proxy/server.py`` uses, where ``logged_tool`` is computed once and every
-    branch writes it. A new caller that skips them writes a credential-bearing
-    tool name straight into the audit trail.
+    :func:`pep.log.loggable_tool` / :func:`pep.log.loggable_reason` (B-015) —
+    the same shape ``proxy/server.py`` uses, where ``logged_tool`` is computed
+    once and every branch writes it. A new caller that skips them writes a
+    credential-bearing tool name straight into the audit trail.
     """
-    return {
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "agent_id": agent_id,
-        "run_id": run_id,
-        "server": server,
-        "method": HOOK_EVENT_NAME,
-        "tool": tool,
-        "arguments": arguments,
-        "verdict": verdict,
-        "rule_id": rule_id,
-        "owasp": owasp,
-        "reason": reason,
-        "decision_ms": decision_ms,
-    }
+    return decision_event(
+        agent_id=agent_id,
+        run_id=run_id,
+        server=server,
+        method=HOOK_EVENT_NAME,
+        tool=tool,
+        arguments=arguments,
+        verdict=verdict,
+        rule_id=rule_id,
+        owasp=owasp,
+        reason=reason,
+        decision_ms=decision_ms,
+    )
 
 
 def _write_event(event: Mapping[str, Any], log_path: str | None) -> None:
@@ -709,14 +452,14 @@ def run(argv: Sequence[str], stdin_text: str) -> tuple[int, str]:
                 # gap (B-116): every caller of `refuse` is a refusal reached
                 # BEFORE the policy loaded or because it would not load, so
                 # there is no `hidden_context:` section to read. Passed
-                # explicitly for `_loggable_arguments`' reason — there is no
+                # explicitly for ``loggable_tool``'s reason — there is no
                 # spelling of this call that redacts less by accident.
-                tool=None if tool is None else _loggable_tool(tool, ()),
+                tool=None if tool is None else loggable_tool(tool, ()),
                 arguments=None,  # unjudgeable input is never echoed into the log
                 verdict=str(Verdict.BLOCK),
                 rule_id=rule_id,
                 owasp=None,  # a hook-internal refusal is not a policy finding
-                reason=detail if tool is None else _loggable_reason(detail, tool, ()),
+                reason=detail if tool is None else loggable_reason(detail, tool, ()),
                 decision_ms=0.0,
             ),
             log_path,
@@ -788,14 +531,14 @@ def run(argv: Sequence[str], stdin_text: str) -> tuple[int, str]:
             agent_id=agent_id,
             run_id=None,  # D-025: this door holds no session; see _event
             server=call.server,  # D-023: the identity the engine judged under
-            tool=_loggable_tool(tool_name, policy.hidden_context.all_segments),
-            arguments=_loggable_arguments(
-                call.arguments, policy.hidden_context.all_segments
+            tool=loggable_tool(tool_name, policy.hidden_context.all_segments),
+            arguments=loggable_arguments(
+                call.arguments, policy.hidden_context.all_segments, truncate=True
             ),
             verdict=str(decision.verdict),
             rule_id=decision.rule_id,
             owasp=decision.owasp,
-            reason=_loggable_reason(
+            reason=loggable_reason(
                 decision.reason, call.tool, policy.hidden_context.all_segments
             ),
             decision_ms=round(decision_ms, 3),

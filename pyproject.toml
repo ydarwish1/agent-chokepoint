@@ -22,6 +22,11 @@ dependencies = [
     "PyYAML>=6",
 ]
 
+[project.scripts]
+chokepoint-hook = "hooks.chokepoint_hook:main"
+chokepoint-proxy = "proxy.__main__:main"
+chokepoint-init = "hooks.init:main"
+
 # Setuptools will not guess among the repo's top-level directories - `deploy`
 # and `telemetry` are documents, not packages - so the real ones are named
 # explicitly. Without this, `pip install -e .` exits 1 with
@@ -36,6 +41,12 @@ dependencies = [
 # way - only in an install.
 [tool.setuptools]
 packages = ["engine", "policy", "proxy", "hooks", "pep"]
+
+# Starter policy + the live example must survive a wheel install: `chokepoint-init`
+# reads `policy/packs/coding-agent.yaml` via importlib.resources. Demos under
+# `proxy/demo/` are still not package data (the image COPYs the tree for those).
+[tool.setuptools.package-data]
+policy = ["policy.example.yaml", "packs/*.yaml"]
 
 # `jsonschema` and the Sigma tools are used by tests/test_telemetry_controls.py
 # only — they validate the published event schema and convert the shipped Sigma

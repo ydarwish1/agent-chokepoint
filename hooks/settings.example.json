@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/ABSOLUTE/PATH/TO/agent-chokepoint/.venv/bin/python /ABSOLUTE/PATH/TO/agent-chokepoint/hooks/chokepoint_hook.py --policy /ABSOLUTE/PATH/TO/agent-chokepoint/policy/policy.example.yaml --log-file /ABSOLUTE/PATH/TO/chokepoint-decisions.jsonl"
+            "command": "/ABSOLUTE/PATH/TO/chokepoint-hook --policy /ABSOLUTE/PATH/TO/chokepoint-policy.yaml --log-file /ABSOLUTE/PATH/TO/chokepoint-decisions.jsonl"
           }
         ]
       },
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/ABSOLUTE/PATH/TO/agent-chokepoint/.venv/bin/python /ABSOLUTE/PATH/TO/agent-chokepoint/hooks/chokepoint_hook.py --policy /ABSOLUTE/PATH/TO/agent-chokepoint/policy/policy.example.yaml --log-file /ABSOLUTE/PATH/TO/chokepoint-decisions.jsonl"
+            "command": "/ABSOLUTE/PATH/TO/chokepoint-hook --policy /ABSOLUTE/PATH/TO/chokepoint-policy.yaml --log-file /ABSOLUTE/PATH/TO/chokepoint-decisions.jsonl"
           }
         ]
       }

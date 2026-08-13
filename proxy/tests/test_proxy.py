@@ -49,13 +49,12 @@ from engine.tests.test_predicates import (
     SMUGGLED_INSTRUCTION,
     _others,
 )
-from hooks.chokepoint_hook import (
-    HIDDEN_CONTEXT_TOOL_NAME_REDACTION_MARKER as _hook_hidden_name_marker,
-    MAX_LOGGED_STRING as _hook_max_logged_string,
-    TOOL_NAME_REDACTION_MARKER as _hook_credential_name_marker,
-    _loggable_arguments as _hook_loggable_arguments,
-    _loggable_tool as _hook_loggable_tool,
-    _truncated,
+from pep.log import (
+    HIDDEN_CONTEXT_TOOL_NAME_REDACTION_MARKER,
+    MAX_LOGGED_STRING,
+    TOOL_NAME_REDACTION_MARKER,
+    loggable_tool,
+    truncated as _truncated,
 )
 from pep import RULE_UNRESOLVABLE_PATH
 from policy import load_policy
@@ -69,10 +68,8 @@ from policy.tests.test_example_policy_rules import (
 )
 from proxy.server import (
     ASK_FAIL_CLOSED_ERROR_CODE,
-    HIDDEN_CONTEXT_TOOL_NAME_REDACTION_MARKER,
     BLOCKED_ERROR_CODE,
     MAX_LOGGED_LINE,
-    MAX_LOGGED_STRING,
     UNINSPECTABLE_ERROR_CODE,
     UNRESOLVABLE_PATH_ERROR_CODE,
     _call_signature,
@@ -1573,33 +1570,27 @@ class TestTheDecisionLogLineIsBounded:
             ("read_file", {"path": "/workspace/README.md", "note": note})
         ]
 
-    def test_the_walk_the_bound_reuses_is_the_hook_door_s_own(self):
-        """Reused rather than restated, for D-036 Decision 1's reason: two copies
-        of a bound are two things free to drift. Asserted as a consequence rather
-        than as an import — the same arguments, walked here and walked at the
-        hook, come out equal, and a control shows they are not agreeing on a
-        no-op.
+    def test_the_walk_the_line_bound_reuses_is_pep_log_truncated(self):
+        """One walk, imported rather than copied (D-036 Decision 1).
 
-        What is deliberately NOT claimed, because it stopped being true when the
-        cut moved to the line: that the two doors log the same thing. Between
-        256 characters and :data:`MAX_LOGGED_LINE` the hook summarises and this
-        door does not, exactly as before this entry — the hook cuts per string
-        because a Claude Code ``Write`` payload carries a whole file body, and
-        this door has never faced one. The leg above pins that difference.
+        What is deliberately NOT claimed: that the two doors log the same
+        thing. Between 256 characters and :data:`MAX_LOGGED_LINE` the hook
+        summarises and this door does not — the hook cuts per string because a
+        Claude Code ``Write`` payload carries a whole file body, and this door
+        has never faced one. The leg above pins that difference.
         """
-        assert MAX_LOGGED_STRING == _hook_max_logged_string
+        from pep.log import truncated
+
+        assert _truncated is truncated
         arguments = {
             "short": "ok",
             "long": "q" * (MAX_LOGGED_STRING + 1),
             "nested": [{"deep": "z" * (MAX_LOGGED_STRING + 1)}, 3, None],
             "exactly_at_the_bound": "b" * MAX_LOGGED_STRING,
         }
-        walked = _truncated(arguments)
-        assert walked == _hook_loggable_arguments(arguments, ())
-        # A control on the control: the two are not agreeing on a no-op.
+        walked = truncated(arguments)
         assert walked["long"] == f"<str len={MAX_LOGGED_STRING + 1} truncated>"
-        # The bound is `>`, not `>=` — a string exactly at it is written whole,
-        # at both doors. Pinned so an off-by-one cannot drift the two apart.
+        # The bound is `>`, not `>=` — a string exactly at it is written whole.
         assert walked["exactly_at_the_bound"] == "b" * MAX_LOGGED_STRING
 
     def test_the_last_stage_is_bounded_by_the_field_count_and_not_by_hope(self):
@@ -1799,7 +1790,7 @@ class TestTheToolNameIsBounded:
             seen.append(value)
             return False
 
-        monkeypatch.setattr("proxy.server.contains_sensitive", spy)
+        monkeypatch.setattr("pep.log.contains_sensitive", spy)
         long_name = "_".join("seg" for _ in range(8000))
         assert len(long_name) > MAX_LOGGED_STRING
         assert _loggable_tool(long_name, ()) == f"<str len={len(long_name)} truncated>"
@@ -1865,10 +1856,10 @@ class TestToolNameRedactionBoundary:
     10 stdio sessions would test the wire instead. ``TestToolNameRedaction``
     below is the end-to-end control that the mechanism reaches a real event.
 
-    **Both doors are asserted for every shape.** They duplicate the helper on
-    purpose (`hooks/` and `proxy/` do not import each other), so they must share
-    the residual as well as the coverage — a difference here is the door
-    disagreement ``side_by_side.py`` exists to catch, one layer down.
+    Both doors call :func:`pep.log.loggable_tool`. The candidate list is a
+    property of that helper, so the table is driven once rather than through
+    two wrappers that used to copy it. The proxy's length cap on the name is
+    :class:`TestTheToolNameIsBounded`, not this residual.
     """
 
     GHP = "ghp_" + "A" * 36
@@ -1910,8 +1901,7 @@ class TestToolNameRedactionBoundary:
         # Empty declared set: this table is about the CREDENTIAL leg, and B-116
         # added a second one behind it. Passing `()` keeps the variable here the
         # name alone, which is what this boundary measures.
-        assert (_loggable_tool(name, ()) != name) is redacted, why
-        assert (_hook_loggable_tool(name, ()) != name) is redacted, why
+        assert (loggable_tool(name, ()) != name) is redacted, why
 
     def test_a_credential_that_is_not_trailing_is_missed_for_a_stated_reason(self):
         # The mechanism behind the table, so a future reader does not have to
@@ -2628,25 +2618,21 @@ class TestUninspectableFrames:
 # ------------------------------ B-116, declared material in a tool NAME
 
 
-class TestDeclaredMaterialInAToolNameIsRedactedAtBothDoors:
-    """**B-116** — `_loggable_tool` ran `contains_sensitive` and nothing else,
-    while the arguments path runs `contains_sensitive` AND
-    `contains_hidden_context`. So a declaration whose whole point is that this
-    material must not leave was written verbatim into the file the gateway
-    keeps, when the material arrived one field over from the one that is
-    checked.
+class TestDeclaredMaterialInAToolNameIsRedacted:
+    """**B-116** — ``loggable_tool`` used to run ``contains_sensitive`` and
+    nothing else, while the arguments path runs ``contains_sensitive`` AND
+    ``contains_hidden_context``. So a declaration whose whole point is that
+    this material must not leave was written verbatim into the file the
+    gateway keeps, when the material arrived one field over from the one that
+    is checked.
 
-    Both doors in one class, and both controls per door, because the identical
-    gap existed at both and fixing one while leaving its twin is the B-071
-    family this filing names three times. `TestToolNameRedactionBoundary`
-    already asserts the two doors agree on the CREDENTIAL leg with the same
-    assertion; this is that discipline for the second leg.
+    Driven on :func:`pep.log.loggable_tool` (both doors call it). The proxy's
+    length cap is :class:`TestTheToolNameIsBounded`.
     """
 
     SEGMENTS = hidden_context_segments(HIDDEN_CONTEXT_SYSTEM_PROMPT)
     DECLARED = "You are the ACME Support Assistant, operating for ACME Robotics."
 
-    @pytest.mark.parametrize("door", ["proxy", "hook"])
     @pytest.mark.parametrize(
         "name,why",
         [
@@ -2655,52 +2641,37 @@ class TestDeclaredMaterialInAToolNameIsRedactedAtBothDoors:
             ("mcp__probe__" + DECLARED, "behind the MCP framing"),
         ],
     )
-    def test_a_declared_segment_in_the_name_is_redacted(self, door, name, why):
-        redact = _loggable_tool if door == "proxy" else _hook_loggable_tool
-        assert redact(name, self.SEGMENTS) == (
-            HIDDEN_CONTEXT_TOOL_NAME_REDACTION_MARKER
-            if door == "proxy" else _hook_hidden_name_marker
-        ), why
+    def test_a_declared_segment_in_the_name_is_redacted(self, name, why):
+        assert loggable_tool(name, self.SEGMENTS) == HIDDEN_CONTEXT_TOOL_NAME_REDACTION_MARKER, why
 
-    @pytest.mark.parametrize("door", ["proxy", "hook"])
     @pytest.mark.parametrize(
         "name",
         ["read_file", "mcp__probe__echo_note", "fetch_url", "tool_You are a support assistant"],
     )
-    def test_the_control_an_ordinary_name_is_untouched(self, door, name):
+    def test_the_control_an_ordinary_name_is_untouched(self, name):
         """The benign neighbour, and the last one matters most: text that reads
         like a system prompt but is not the DECLARED text is not redacted.
         D-049's whole design is that the operator declares the material rather
         than a matcher guessing at its shape, and a check that fired on
-        prompt-shaped prose would be the content filtering this project rules
-        out of scope."""
-        redact = _loggable_tool if door == "proxy" else _hook_loggable_tool
-        assert redact(name, self.SEGMENTS) == name
+        ordinary English would be a matcher this project does not have."""
+        assert loggable_tool(name, self.SEGMENTS) == name
 
-    @pytest.mark.parametrize("door", ["proxy", "hook"])
-    def test_the_credential_leg_still_wins_when_a_name_carries_both(self, door):
-        """Order, and it is the same order `_loggable_arguments` documents as
-        load-bearing: a name carrying both is attributed to the credential,
-        which is the narrower and more actionable fact."""
-        redact = _loggable_tool if door == "proxy" else _hook_loggable_tool
+    def test_credential_wins_when_both_are_present(self):
+        """Order, and it is the same order ``loggable_arguments`` documents as
+        load-bearing: a name that is both a credential and declared material
+        is the credential marker, not the hidden-context one."""
         both = self.DECLARED.replace(" ", "_") + "_" + AKIA
-        assert redact(both, self.SEGMENTS) == (
-            TOOL_NAME_REDACTION_MARKER if door == "proxy" else _hook_credential_name_marker
-        )
+        assert loggable_tool(both, self.SEGMENTS) == TOOL_NAME_REDACTION_MARKER
 
-    @pytest.mark.parametrize("door", ["proxy", "hook"])
-    def test_an_undeclared_deployment_redacts_nothing_extra(self, door):
+    def test_an_undeclared_deployment_redacts_nothing_extra(self):
         """The other guard-off direction: with no `hidden_context:` section the
         segments are empty and this leg cannot fire, so a deployment that
         declares nothing is exactly as it was before B-116."""
-        redact = _loggable_tool if door == "proxy" else _hook_loggable_tool
-        assert redact(self.DECLARED, ()) == self.DECLARED
+        assert loggable_tool(self.DECLARED, ()) == self.DECLARED
 
-    def test_the_two_doors_emit_the_same_marker(self):
+    def test_the_two_markers_are_distinct(self):
         """One grep for `[REDACTED:` has to find every redaction either door can
-        emit, and `hooks/demo/side_by_side.py` compares the doors' events —
-        asserted in one place so they cannot drift apart."""
-        assert HIDDEN_CONTEXT_TOOL_NAME_REDACTION_MARKER == _hook_hidden_name_marker
+        emit. The two markers must not collapse into one string."""
         assert HIDDEN_CONTEXT_TOOL_NAME_REDACTION_MARKER != TOOL_NAME_REDACTION_MARKER
 
     async def test_the_name_is_redacted_in_a_real_decision_event(self, tmp_path):

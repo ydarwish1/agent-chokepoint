@@ -1,6 +1,6 @@
 # policy — the file the engine is told what to do by
 
-`policy.example.yaml` is the LIVE policy: the proxy is run against it, the demos run against it, and `policy/tests/` asserts both directions of every rule straight out of that file rather than out of a fixture. `loader.py` turns it into an immutable `engine.Policy` and refuses anything it cannot enforce — an unknown key, an unknown predicate, a relative path prefix, an empty `when`, a rule claiming a reserved id namespace — at load time rather than at decide time.
+`policy.example.yaml` is the LIVE policy: the proxy is run against it, the demos run against it, and `policy/tests/` asserts both directions of every rule straight out of that file rather than out of a fixture. `policy/packs/coding-agent.yaml` is the same rules with a `/ABSOLUTE/PATH/TO/PROJECT` placeholder; `chokepoint-init` copies that pack. `loader.py` turns it into an immutable `engine.Policy` and refuses anything it cannot enforce — an unknown key, an unknown predicate, a relative path prefix, an empty `when`, a rule claiming a reserved id namespace — at load time rather than at decide time.
 
 ## Editing `policy.example.yaml` — read this first
 

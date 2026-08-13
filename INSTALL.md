@@ -13,9 +13,10 @@ Paste this into Claude Code, or any agent that can run shell commands:
 
 ```
 Clone https://github.com/ydarwish1/agent-chokepoint, read its INSTALL.md,
-and install the Claude Code hook for me. Use the shipped example policy first,
-run the verification step, and show me the output. Then help me edit the policy
-so it fits the directories I actually work in.
+and install the Claude Code hook for me. Create a venv, pip install -e .,
+then run chokepoint-init --project <the directory I work in> --install-settings
+~/.claude/settings.json. Run the verification commands it prints, and show me
+the output.
 ```
 
 That is the whole install for most people. The rest of this file is what the agent will be reading, and it is written so you can follow it yourself.
@@ -39,45 +40,52 @@ python3 -m venv .venv                 # or: /opt/homebrew/bin/python3.12 -m venv
 .venv/bin/python -m pip install -e .
 ```
 
-The project declares two dependencies, `mcp` and `PyYAML`. Pip pulls in whatever `mcp` needs on top of those. No daemon, no database, no account, and nothing outside that directory.
+That puts three commands on your PATH inside the venv: `chokepoint-init`, `chokepoint-hook`, and `chokepoint-proxy`. The project declares two dependencies, `mcp` and `PyYAML`. Pip pulls in whatever `mcp` needs on top of those. No daemon, no database, no account, and nothing outside that directory.
 
-Want the tests too? `.venv/bin/python -m pip install "pytest>=9"` and then `.venv/bin/python -m pytest`.
+Want the tests too? `.venv/bin/python -m pip install --upgrade pip` and `.venv/bin/python -m pip install --group dev` (PEP 735, pip 25.1+), then `.venv/bin/python -m pytest`. `pip install "pytest>=9"` alone is not enough: without the dev group, `tests/test_telemetry_controls.py` skips instead of checking the event schema.
 
-## Step 2: check it actually works
+## Step 2: write YOUR policy and settings
 
-Run the gateway by hand once, before wiring it into anything:
-
-```bash
-echo '{"tool_name":"Read","tool_input":{"file_path":"/workspace/notes.txt"}}' | \
-  .venv/bin/python hooks/chokepoint_hook.py --policy policy/policy.example.yaml
-```
-
-You should see a decision on stdout:
-
-```
-{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow", "permissionDecisionReason": "agent-chokepoint: allowed by rule fs-read-scoped (LLM01)"}}
-```
-
-Now check that it refuses something. Same command, different path:
+The shipped `policy/policy.example.yaml` only allows paths under `/workspace/`. On a laptop that is deny-by-default doing its job, not a broken install. `chokepoint-init` copies the coding-agent pack, fills in the directory you name, and writes a settings fragment with absolute paths:
 
 ```bash
-echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /workspace"}}' | \
-  .venv/bin/python hooks/chokepoint_hook.py --policy policy/policy.example.yaml
+.venv/bin/chokepoint-init --project /ABSOLUTE/PATH/TO/YOUR/REPO \
+  --install-settings ~/.claude/settings.json
 ```
 
+`--project` must be a real directory. Relative names are resolved against your current working directory. The written policy and the decision log are refused if they would sit *inside* that directory — the agent could then rewrite the control. Defaults are `~/chokepoint-policy.yaml` and `~/chokepoint-decisions.jsonl`. If `--project` *is* your home directory, those defaults sit inside the allow prefix and init will refuse; pass `--policy-out` and `--log-file` somewhere else.
+
+Deny-by-default is unchanged: anything you did not name is still blocked. Writes stay `ask`. Init prints two verification commands; run them. Then restart Claude Code.
+
+To print a settings fragment without merging into an existing file, omit `--install-settings` or pass `--settings-out ./claude-settings.chokepoint.json`.
+
+## Step 3: check it actually works
+
+Run the gateway by hand once. Init prints the exact commands; they look like this:
+
+```bash
+echo '{"tool_name":"Read","tool_input":{"file_path":"/ABSOLUTE/PATH/TO/YOUR/REPO/notes.txt"}}' | \
+  .venv/bin/chokepoint-hook --policy ~/chokepoint-policy.yaml --log-file ~/chokepoint-decisions.jsonl
 ```
-{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "agent-chokepoint: blocked by rule shell-destructive (LLM01): rule shell-destructive matched tool 'run_command'"}}
+
+You should see a decision on stdout. A path under `--project` is `allow` from `fs-read-scoped`. Then check that it refuses something outside that prefix:
+
+```bash
+echo '{"tool_name":"Read","tool_input":{"file_path":"/etc/shadow"}}' | \
+  .venv/bin/chokepoint-hook --policy ~/chokepoint-policy.yaml --log-file ~/chokepoint-decisions.jsonl
 ```
+
+That is `deny` from `default:on_no_match`. A destructive shell command is `deny` from `shell-destructive`.
 
 **Read the exit code, not just the text.** A verdict of any kind, refusals included, comes back as exit 0 with that JSON on stdout. Exit 2 is the fail-closed path: the hook could not reach a decision at all, so it blocks the call and prints why on stderr. Both of those are a healthy install.
 
 **Exit 1 is the one that matters.** In this protocol exit 1 means "non-blocking error, run the tool anyway", so a hook that exits 1 is a hook that permits exactly the call it failed to judge. It happens when Python cannot run the file at all, from a truncated copy or a syntax error, because the interpreter quits before any of the hook's own guards get to run. Nothing inside the file can catch that, which is why you run it by hand.
 
-Point the command at the venv you just made rather than a bare `python3`. An interpreter without PyYAML gives you exit 2 and `could not import its own engine`, which is safe but useless.
+Point the command at the venv you just made rather than a bare `python3`. An interpreter without PyYAML gives you **exit 2** and `could not import its own engine`, which is safe (the call is blocked) but useless. That used to be exit 1; the import is now guarded. Syntax errors in the hook file are still unguardable exit 1.
 
-## Step 3: wire it into Claude Code
+## Step 4: wire it into Claude Code by hand (if you skipped `--install-settings`)
 
-Copy the block from `hooks/settings.example.json` into `~/.claude/settings.json`, or into `.claude/settings.json` inside a single project. If you already have a `hooks` key, merge into it rather than replacing it.
+Copy the block from `hooks/settings.example.json` into `~/.claude/settings.json`, or into `.claude/settings.json` inside a single project. If you already have a `hooks` key, merge into it rather than replacing it. `chokepoint-init --install-settings` does that merge for you.
 
 ```json
 {
@@ -88,7 +96,7 @@ Copy the block from `hooks/settings.example.json` into `~/.claude/settings.json`
         "hooks": [
           {
             "type": "command",
-            "command": "/ABSOLUTE/PATH/TO/agent-chokepoint/.venv/bin/python /ABSOLUTE/PATH/TO/agent-chokepoint/hooks/chokepoint_hook.py --policy /ABSOLUTE/PATH/TO/agent-chokepoint/policy/policy.example.yaml --log-file /ABSOLUTE/PATH/TO/chokepoint-decisions.jsonl"
+            "command": "/ABSOLUTE/PATH/TO/chokepoint-hook --policy /ABSOLUTE/PATH/TO/chokepoint-policy.yaml --log-file /ABSOLUTE/PATH/TO/chokepoint-decisions.jsonl"
           }
         ]
       },
@@ -97,7 +105,7 @@ Copy the block from `hooks/settings.example.json` into `~/.claude/settings.json`
         "hooks": [
           {
             "type": "command",
-            "command": "/ABSOLUTE/PATH/TO/agent-chokepoint/.venv/bin/python /ABSOLUTE/PATH/TO/agent-chokepoint/hooks/chokepoint_hook.py --policy /ABSOLUTE/PATH/TO/agent-chokepoint/policy/policy.example.yaml --log-file /ABSOLUTE/PATH/TO/chokepoint-decisions.jsonl"
+            "command": "/ABSOLUTE/PATH/TO/chokepoint-hook --policy /ABSOLUTE/PATH/TO/chokepoint-policy.yaml --log-file /ABSOLUTE/PATH/TO/chokepoint-decisions.jsonl"
           }
         ]
       }
@@ -108,42 +116,23 @@ Copy the block from `hooks/settings.example.json` into `~/.claude/settings.json`
 
 Three things to get right:
 
-1. **Replace every `/ABSOLUTE/PATH/TO/...`.** Hooks run with your project as the working directory, so relative paths do not work.
-2. **The interpreter path is part of that.** It has to be the venv from step 1. A bare `python3` has no PyYAML and produces the exit 1 case above.
+1. **Replace every `/ABSOLUTE/PATH/TO/...`.** Hooks run with your project as the working directory, so relative paths do not work. After `pip install -e .`, `chokepoint-hook` lives next to the venv's `python`.
+2. **Use that venv binary, not a bare `python3`.** A bare interpreter has no PyYAML and the hook exits 2 (fail-closed). A truncated or syntactically broken hook file still exits 1 (fail-open) — run the verification command after every edit.
 3. **There are two matcher groups on purpose.** `mcp__.*` covers every MCP tool your agent has. The anchored list covers the built-in tools this policy vocabulary can describe.
 
 Restart Claude Code, then ask it to read a file. Decisions land in the `--log-file` you named, one JSON line each. If nothing appears there, the hook is not firing and the paths are the first thing to check.
 
-## Step 4: make the policy yours
-
-**Do this before you decide the tool is broken.** The shipped example is a demo policy. It allows file reads only under `/workspace/`, so on a normal machine almost everything your agent does gets refused:
-
-```
-Read /Users/alice/project/main.py    ->  deny   (default:on_no_match)
-Read /workspace/main.py              ->  allow  (fs-read-scoped)
-```
-
-That is the deny-by-default design working as intended, not a bug. Copy the example somewhere outside the repo, point `--policy` at your copy, and change the paths to the directories you actually work in:
-
-```bash
-cp policy/policy.example.yaml ~/chokepoint-policy.yaml
-```
-
-Then edit the `path_within` list to name your project directories. The file is heavily commented and every rule is written out in full. Start by changing three things:
-
-- `path_within` under the read rule: where your agent may read.
-- `path_within` under the write rule: where it may write. It is set to `ask`, so writes surface as a permission prompt rather than going through silently.
-- `domain_in` under the fetch rule: which hosts it may reach.
-
-Paths must be absolute. The engine cannot know your tool's working directory, so it refuses to judge a relative path, which means a relative prefix protects nothing.
+To change hosts or tighten writes later, edit `~/chokepoint-policy.yaml` (or wherever `--policy-out` wrote). Paths must stay absolute. The engine cannot know your tool's working directory, so it refuses to judge a relative path, which means a relative prefix protects nothing. Do not put the policy file or the log under a `path_within` prefix.
 
 ## Running the MCP proxy instead
 
 If your agent speaks MCP, put the proxy between it and the server:
 
 ```bash
-.venv/bin/python -m proxy --policy policy/policy.example.yaml -- <your MCP server command>
+.venv/bin/chokepoint-proxy --policy ~/chokepoint-policy.yaml -- <your MCP server command>
 ```
+
+(`python -m proxy` is the same entrypoint.)
 
 Flags: `--policy` is required, `--agent-id` labels the decisions, `--server-name` binds rules that name a server, and `--log-file` appends decision events somewhere instead of stderr.
 
@@ -174,7 +163,7 @@ An `allow` from the hook is also not a grant. It is this control declining to ob
 |---|---|
 | Exit 1 from the hook | Python could not run the file at all, so calls go through unjudged. Restore or re-clone the hook file. |
 | Exit 2 plus `could not import its own engine` | The interpreter has no PyYAML. You are pointing at the wrong Python. Calls are blocked, not permitted. |
-| Everything gets denied | You are still on the example policy and its paths are not yours. See step 4. |
+| Everything gets denied | You are still on the `/workspace/` example policy. Run `chokepoint-init --project` for your directory. |
 | `blocked by rule default:on_no_match` | Nothing matched, so deny-by-default fired. Add a rule for that call. |
 | No lines in the log file | The hook is not firing. Check the paths and that you restarted Claude Code. |
 | Proxy exits 2 at startup | The policy file will not load. The final event in your log says why. |

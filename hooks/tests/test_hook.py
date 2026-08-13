@@ -35,20 +35,16 @@ from typing import Mapping
 import pytest
 
 from engine import ToolCall
-from engine.predicates import _strings_in
+from engine.predicates import _MAX_SCAN_DEPTH, _strings_in
 from pep import RULE_UNRESOLVABLE_PATH
+from pep.log import DEPTH_BOUND_MARKER, MAX_LOGGED_STRING, REDACTION_MARKER, truncated as _truncated
 from hooks.chokepoint_hook import (
     DEFAULT_AGENT_ID,
-    DEPTH_BOUND_MARKER,
-    MAX_LOGGED_STRING,
-    REDACTION_MARKER,
     NATIVE_TOOLS,
     RULE_UNPARSEABLE,
     UnparseableInput,
-    _MAX_SCAN_DEPTH,
     _parse_payload,
     _translate,
-    _truncated,
     run,
 )
 
@@ -2164,10 +2160,7 @@ class TestTheEventBuilderIsBounded:
         """D-036 Decision 1: two spellings of one bound are two things free to
         drift. The marker quotes it, so this also pins the operator-facing
         string to the constant it describes."""
-        from engine.predicates import _MAX_SCAN_DEPTH as engine_bound
-
-        assert _MAX_SCAN_DEPTH == engine_bound
-        assert str(engine_bound) in DEPTH_BOUND_MARKER
+        assert str(_MAX_SCAN_DEPTH) in DEPTH_BOUND_MARKER
 
     def test_the_walk_preserves_field_order_and_shape(self):
         """The rewrite is iterative and builds its result through a stack, so

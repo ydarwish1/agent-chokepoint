@@ -75,50 +75,18 @@ from engine import (
     ToolListing,
     UndigestibleDefinition,
     Verdict,
-    contains_hidden_context,
-    contains_sensitive,
     decide,
     decide_listing,
     tool_definition_digest,
 )
 
-# CP-05. The string bound and the walk that applies it are the HOOK's, imported
-# rather than restated, for D-036 Decision 1's reason — two copies of a bound
-# are two things free to drift, and this door has to be able to say which number
-# the other one cut at.
-# The direction is safe and was checked rather than assumed: nothing under
-# `hooks/`, `engine/`, `pep/` or `policy/` imports `proxy`
-# (`/usr/bin/grep -rn -e 'import proxy' -e 'from proxy' hooks/ pep/ engine/ policy/`
-# exits 1), so there is no cycle; `hooks` is a declared package in
-# `pyproject.toml:[tool.setuptools] packages` and `deploy/Dockerfile` COPYs it
-# into the image, so the name resolves in the shipped container and not only in
-# this repo's own test run. `proxy/tests/test_proxy.py` already imports this
-# module's `_loggable_tool` for the same reason.
-#
-# The residual, stated rather than mechanised: `chokepoint_hook`'s first-party
-# imports sit inside a `try/except Exception` that deliberately swallows failure
-# so `main()` can exit 2, and `_truncated`'s depth branch reads a
-# `DEPTH_BOUND_MARKER` built inside that guard. Everything in the guard except
-# `policy` is imported unguarded by THIS module above, so the only way to reach
-# an unbound name here is an install with no PyYAML — which cannot run
-# `python -m proxy` at all, since `proxy/__main__.py` loads the policy file.
-# The right long-term home for the walk is `pep/`, the package both doors
-# already share; moving it there is a separate change.
-#
-# `MAX_LOGGED_STRING` rides along with the walk that uses it because the bound
-# this door applies has to be findable AT this door: CP-05's own tell was
-# `/usr/bin/grep -n -e MAX_LOGGED -e truncat proxy/server.py` exiting 1, and a
-# bound you cannot grep out of the file that applies it is how a missing one
-# stays invisible.
-#
-# The walk has exactly three call sites here and none of them is "every call's
-# arguments" — that spelling was measured and rejected, `_loggable_arguments`
-# says why. It is the first stage of `_within_the_line_bound`, and the cut
-# `_loggable_tool` and the `reason` substitution make on their two
-# agent-chosen fields. `MAX_LOGGED_STRING` is read once more, by `_summarised`,
-# as the per-FIELD ceiling of the line bound's last stage.
-from hooks.chokepoint_hook import MAX_LOGGED_STRING, _truncated
 from pep import RULE_UNRESOLVABLE_PATH, UnresolvablePath, canonicalized_arguments
+from pep.log import (
+    MAX_LOGGED_STRING,
+    loggable_arguments,
+    loggable_tool,
+    truncated as _truncated,
+)
 
 # JSON-RPC implementation-defined server-error range (-32000..-32099).
 BLOCKED_ERROR_CODE = -32000
@@ -449,266 +417,14 @@ def _call_signature(name: str, arguments: Any) -> str:
     return hashlib.sha256(serialised.encode("utf-8")).hexdigest()
 
 
-# Its own marker rather than the credential one below, for the reason
-# `TOOL_NAME_REDACTION_MARKER` has its own: the two state different facts about
-# WHAT was in the arguments — a published credential format, or material this
-# deployment's operator declared — and one grep for `[REDACTED:` still finds
-# both. `hooks/chokepoint_hook.py` keeps a byte-identical constant, because the
-# two doors' events are compared field for field (`hooks/demo/side_by_side.py`).
-HIDDEN_CONTEXT_REDACTION_MARKER = "[REDACTED: declared hidden context detected in arguments]"
-
-
 def _loggable_arguments(arguments: Any, hidden_segments: Any) -> Any:
-    """Never write a detected secret, or declared hidden context, into the log.
-
-    Redaction keys off argument CONTENT, not off which rule fired: a
-    credential in an argument must stay out of the log even when the call was
-    allowed (no egress rule covering that tool) or blocked by an unrelated
-    rule. A telemetry schema with field-level redaction is future work.
-
-    ``hidden_segments`` is ``policy.hidden_context.all_segments`` — D-049. It is
-    passed rather than defaulted so a new call site cannot forget it and quietly
-    write the material out; there is no spelling of this call that redacts less
-    by accident. **Every declared set, not the sets some rule arms**, for the
-    same reason as the line above: declaring material keeps it out of the log
-    even where no rule refuses the call carrying it.
-
-    Why it is here at all, and it is not tidiness: without it a refusal whose
-    whole point is *this material must not leave* writes that material verbatim
-    into a file — and under the shipped example policy that file is readable by
-    the agent whenever the operator keeps it inside an allowed prefix (B-088).
-    A control that leaks what it protects is worse than no control, because the
-    operator believes it worked.
-
-    The credential check runs first so a call carrying both is attributed to the
-    credential, which is the narrower and more actionable fact.
-
-    **CP-05 deliberately does NOT cut length here, and that is the round-3
-    correction to this entry.** The audit is right that nothing on the proxy
-    path bounded what a refused call wrote — ``/usr/bin/grep -n -e MAX_LOGGED
-    -e truncat proxy/server.py`` exited 1 with no output while the hook door had
-    been bounded since B-111. The first attempt closed it by returning
-    ``_truncated(arguments)`` from this line, cutting every logged string at
-    ``hooks/chokepoint_hook.py:MAX_LOGGED_STRING``. Measured, that fixes one
-    payload SHAPE and not the defect: an 8 MiB argument sent as 32,768 strings
-    of exactly 256 characters wrote the same **8,520,043-byte** decision line
-    with the walk in place as without it, because a per-string bound has nothing
-    to cut when every string is already at the cutoff. The bound that answers
-    the entry is on the LINE — :func:`_within_the_line_bound`, applied at
-    ``_emit``.
-
-    Two further things went wrong when the cut was made here, and they are why
-    the line is the RIGHT place rather than merely a bigger hammer:
-
-    * ``proxy/tests/test_decision_log_encoding.py`` proves that a control
-      character in an argument cannot forge a log line, and its last assertion
-      is deliberately "these payloads never reached the log at all" — the
-      control that stops the other three passing vacuously. Every forgery vector
-      is longer than 256 characters, so a cut here summarised them away and
-      turned that file's three legs red. A bound that fires on ORDINARY events
-      deletes the evidence other properties are measured on.
-    * the events this suite asserts on, the committed
-      ``telemetry/samples/*.jsonl`` and ``hooks/demo/side_by_side.py``'s
-      field-for-field comparison all read ordinary events, and a cut here
-      changes every one of them. The line bound changes none: an event under
-      :data:`MAX_LOGGED_LINE` reaches the sink exactly as this function built it.
-
-    So the two doors still differ on this field between 256 characters and the
-    line bound, exactly as they did before this entry, and the asymmetry has a
-    reason rather than being an oversight: the hook cuts per string because a
-    Claude Code ``Write`` payload carries a whole file body and an ``Edit``
-    payload two whole strings, which is a size and privacy hazard this door has
-    never faced. What both doors now have is a bound; they do not have the same
-    one.
-
-    **Logging only, exactly as at the hook.** ``decide()`` has already been
-    handed the full ``judged_arguments`` by the time this runs, and
-    ``_call_signature`` builds the repeat-detection key from the arguments the
-    agent sent, before any of this. No verdict and no counter moves.
-    """
-    if contains_sensitive(arguments):
-        return "[REDACTED: sensitive content detected in arguments]"
-    if contains_hidden_context(hidden_segments, arguments):
-        return HIDDEN_CONTEXT_REDACTION_MARKER
-    return arguments
-
-
-# Its own marker rather than the arguments one above: the two state different
-# facts about where the credential was, and one grep for `[REDACTED:` still
-# finds both. `hooks/chokepoint_hook.py` keeps the arguments marker as a
-# byte-identical constant for that reason; its `tool` field is written verbatim
-# today and wants this one.
-TOOL_NAME_REDACTION_MARKER = "[REDACTED: sensitive content detected in tool name]"
-
-# The declared-material twin of the marker above (B-116, schema 1.7.0). Its own
-# string for the same reason `HIDDEN_CONTEXT_REDACTION_MARKER` is its own: the
-# two state different facts about what was in the name — a published credential
-# FORMAT, or material THIS deployment declared — and one grep for `[REDACTED:`
-# still finds both. Byte-identical at the hook.
-HIDDEN_CONTEXT_TOOL_NAME_REDACTION_MARKER = (
-    "[REDACTED: declared hidden context detected in tool name]"
-)
+    """Proxy door: scan full arguments, no per-string cut (CP-05 line bound is later)."""
+    return loggable_arguments(arguments, hidden_segments, truncate=False)
 
 
 def _loggable_tool(name: str, hidden_segments: Any) -> str:
-    r"""Never write detected material into the decision log — B-015, B-116.
-
-    The tool name is an agent-controlled string exactly like an argument, and
-    this proxy wrote it verbatim, so ``read_file_AKIAIOSFODNN7EXAMPLE`` landed
-    in the decision log while the identical credential sitting in ``arguments``
-    was redacted in the same run.
-
-    **Why the name is split before it is scanned.** Every matcher in
-    ``ARG_MATCHERS`` is anchored on ``\b`` and ``_`` is a word character, so a
-    plain ``contains_sensitive(name)`` is False on B-015's own repro
-    string — measured on this interpreter, not assumed:
-    ``contains_sensitive("read_file_AKIAIOSFODNN7EXAMPLE") is False``. That fix
-    would have closed B-015 in form and left it open in fact. ``_`` is the
-    separator in MCP tool naming (``mcp__server__tool``), so every
-    underscore-delimited SUFFIX of the name is offered to the matchers too. The
-    first candidate is the whole name, so nothing the plain call caught is lost
-    — the GitHub/Slack token patterns carry a ``_`` inside the pattern itself
-    and are only found that way.
-
-    Rejected: loosening the ``\b`` in ``engine/predicates.py``. That is the same
-    regex ``args_match_any`` evaluates for every policy — it would change
-    enforcement to fix a log line.
-
-    **Redacted whole, not in part.** ``contains_sensitive`` is a boolean union
-    over the matchers and carries no span, so partial redaction would have to
-    guess where the credential ends and could leave the head of it behind — the
-    bug it was meant to fix. Field-level redaction is future work, the same line
-    ``_loggable_arguments`` draws. The event survives losing the name:
-    it still carries the verdict, the rule id, the reason, the timestamp and the
-    agent id, and a tool named after a credential matches no rule in a
-    deny-by-default policy, so what the trail records is "a call whose NAME
-    carried a credential was refused" — the auditable fact. A legitimate tool is
-    not named after an AWS key.
-
-    **The residual is wider than this docstring used to say** (B-045). Every
-    candidate is a ``_``-delimited SUFFIX, so the credential needs a word
-    boundary on BOTH sides of some candidate: on the left, the name starts there
-    or a ``_`` (a split point) or a non-word character precedes it; on the right,
-    the name ends there or a non-word character follows. Measured at both doors
-    over 320 names across all four credential families; the doors agree on every
-    one:
-
-    ==================================  ==========================  =============
-    shape                               AWS / Google (fixed len)    GitHub / Slack
-    ==================================  ==========================  =============
-    the credential alone                redacted                    redacted
-    after ``_``/non-word, ends the name redacted                    redacted
-    after ``_``/non-word, then ``-x``   redacted                    redacted
-    ``…AKIA…_tail``                     **missed**                  **missed**
-    ``…AKIA…x``  (fused after)          **missed**                  redacted
-    ``…xAKIA…``  (fused before)         **missed**                  **missed**
-    ``readnoteAKIA…`` (no separator)    **missed**                  **missed**
-    ==================================  ==========================  =============
-
-    Rows 4 and 6 hold for every family. Row 5 splits because a fixed-length
-    pattern has nowhere left to consume while an open-ended one (GitHub
-    ``{36,}``, Slack ``{10,}``) takes the extra character and finds its boundary
-    one place later. And read rows 2 and 6 together: **ending the name is not on
-    its own sufficient** — ``read_note_xAKIA…`` ends the name and is still
-    missed, because the fused letter destroys the leading boundary. ``_`` after
-    the credential is fatal for everyone, because it is a word character AND the
-    split delimiter, so no candidate ever ENDS at the credential.
-
-    ``contains_sensitive("read_note_AKIA…")`` is **False**, which is why adding
-    the ``_``-delimited PREFIXES does not close the gap: a prefix supplies the
-    trailing boundary and loses the leading one. Measured before it was proposed.
-
-    Closing it properly needs every contiguous RUN of segments as a candidate,
-    which is O(n²) candidates over an agent-controlled string — a new denial
-    surface bought for a log line — or the ``\b`` loosened in
-    ``engine/predicates.py``, which is the same regex every policy's
-    ``args_match_any`` evaluates and would change ENFORCEMENT to fix logging.
-    Both are rejected; the shape above is pinned instead by
-    ``proxy/tests/test_proxy.py::TestToolNameRedactionBoundary`` so it cannot
-    drift silently, and it is written down for operators in
-    ``docs/LIMITATIONS.md`` §17.
-
-    Logging only. The ENGINE and the UPSTREAM are handed ``params.name``
-    untouched — redacting at the source would change which rule matches and
-    would hand the upstream a tool it does not have.
-
-    **CP-05's twin, and after round 3 it is about COST rather than volume.**
-    ``params.name`` is agent-chosen exactly like an argument — read straight off
-    the wire, with nothing on this path validating it — and it lands in TWO
-    fields of the same event: ``tool``, and ``reason``, which quotes the name
-    back (``engine/decide.py`` writes ``rule {id} matched tool {call.tool!r}``
-    and ``no rule matched tool {call.tool!r}``; cited by their text rather than
-    by line, which has already moved once). :func:`_within_the_line_bound`
-    catches an over-long name on its own: measured on this tree, one
-    ``tools/call`` whose NAME was 8 MiB, refused ``block / default:on_no_match``
-    and never forwarded, wrote **421 bytes** with this guard and **410** with
-    the guard's two lines deleted and nothing else changed. So the volume is not
-    what this buys.
-
-    Three things are. First, the candidate build below is **quadratic in the
-    number of segments** — every ``_``-delimited suffix is materialised before
-    the matchers see any of them — and that cost is paid inside the decision
-    path, before any event is built, so no bound on the OUTPUT can reach it.
-    Same A/B, at 500 / 1000 / 2000 / 4000 segments and quoted as a range across
-    two runs because a stopwatch on a laptop is noisy: **0.003–0.005 /
-    0.010–0.017 / 0.039–0.059 / 0.154–0.215 s** unguarded against about a
-    microsecond guarded, the last from a 16 KB name that materialises ~32 MB of
-    candidate strings. Second, the event stays readable: with the guard the
-    ``tool`` field carries the hook's own ``<str len=N truncated>`` and every
-    other field is untouched, where without it the whole event drops to the line
-    bound's third stage. Third, a bound in the field that carries the name is
-    findable by an operator grepping this file, which is how CP-05 was missed.
-
-    **Why the guard comes before the scan.**
-    :func:`~hooks.chokepoint_hook._truncated` replaces an over-length string
-    WHOLE — it is a summary, ``<str len=N truncated>``, not a prefix cut — so a
-    name past the bound carries no name text into the event whatever this
-    function decides. Scanning it first cannot keep anything out of the log that
-    the summary does not already keep out; it can only spend the quadratic build
-    on a string nobody will read. What is given up is stated rather than hidden,
-    and it is attribution, not containment: for a name past the bound the event
-    records a length instead of *which* marker applied, so an operator reads
-    "a 300-character name was refused" where they would have read "this name
-    carried a credential". Containment is what a security product owes here and
-    it is unchanged — the material does not reach the event on either path,
-    which ``TestTheToolNameIsBounded`` asserts directly rather than argues, with
-    the same shape under the bound as its control so the marker leg is visibly
-    still live.
-
-    **The doors legitimately diverge on this bound.** Every other redaction in
-    this function is asserted identical at both doors
-    (``TestToolNameRedactionBoundary``), because ``side_by_side.py`` compares
-    their events field for field. This bound is not, because the two names have
-    different provenance: this door reads ``params.name`` straight off the wire,
-    unvalidated, so an agent picks its length; the hook door is handed a name
-    Claude Code already resolved to a registered tool, so there is no 8 MiB name
-    to write. The hook's ``_loggable_tool`` is still unbounded, and if a name
-    ever can reach it from outside that registry it wants this same guard —
-    recorded here rather than changed, because no name of that size can reach
-    that door today. It is not the only divergence: :func:`_loggable_arguments`
-    says why the ARGUMENTS field differs between the doors too, and why that
-    difference is older than this entry rather than introduced by it.
-    """
-    # See the docstring section above for why this precedes the scan.
-    if len(name) > MAX_LOGGED_STRING:
-        return _truncated(name)
-    segments = name.split("_")
-    candidates = ["_".join(segments[i:]) for i in range(len(segments))]
-    if contains_sensitive(candidates):
-        return TOOL_NAME_REDACTION_MARKER
-    # B-116. The arguments path runs `contains_sensitive` AND
-    # `contains_hidden_context`; this path ran only the first, so declared
-    # material arriving one field over was written into the decision log in
-    # full. Second, so a name carrying both is attributed to the credential —
-    # the same order, and for the same reason, as `_loggable_arguments`.
-    #
-    # The WHOLE name is offered as well as the suffixes: a declared segment is
-    # ordinary prose rather than a `\b`-anchored pattern, so the underscore
-    # splitting that B-015 needed buys nothing here and would miss a name that
-    # simply IS the declared sentence.
-    if contains_hidden_context(hidden_segments, [name, *candidates]):
-        return HIDDEN_CONTEXT_TOOL_NAME_REDACTION_MARKER
-    return name
+    """Proxy door: cap name length before the quadratic suffix scan."""
+    return loggable_tool(name, hidden_segments, max_len=MAX_LOGGED_STRING)
 
 
 class UninspectableListing(ValueError):

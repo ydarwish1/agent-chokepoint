@@ -8,12 +8,14 @@ A security checkpoint that sits between an AI agent and its tools. Every action 
 
 *Every box above is a thing in this repo, and the picture is generated rather than drawn: [`docs/diagram/architecture.html`](docs/diagram/architecture.html) is the source, rendered headless at 1600x980. Change the source, re-render, and the diagram cannot drift from what the code does without someone editing the words.*
 
-**Installing it is a clone, a `pip install`, and one JSON block in your Claude Code settings.** Full instructions are in [`INSTALL.md`](INSTALL.md), written so you can hand the repo to your own agent and let it do the work:
+**Installing it is a clone, a `pip install`, and `chokepoint-init --project`.** Full instructions are in [`INSTALL.md`](INSTALL.md), written so you can hand the repo to your own agent and let it do the work:
 
 ```
 Clone https://github.com/ydarwish1/agent-chokepoint, read its INSTALL.md,
-and install the Claude Code hook for me. Use the shipped example policy first,
-run the verification step, and show me the output.
+and install the Claude Code hook for me. Create a venv, pip install -e .,
+then run chokepoint-init --project <the directory I work in> --install-settings
+~/.claude/settings.json. Run the verification commands it prints, and show me
+the output.
 ```
 
 ![A terminal running proxy/demo/tainted_run.py. Its header names the policy file, the shipped taint.egress_mode of secrets_only, and the page the demo's own upstream will serve: proxy/demo/poisoned-page.txt, followed by a NOTE that the upstream records run_command instead of executing it and answers fetch_url from that file, so nothing touches the network. Leg 1, a clean session through the proxy: run_command with 'echo AKIAAAAAAAAAAAAAAAAA' is allowed by rule shell-readonly and appears in the upstream's EXECUTED.log. Leg 2, a fresh session: fetch_url on a docs.python.org URL is allowed, and the upstream answers it with that committed file, which comes back carrying an HTML comment instructing the agent to print its AWS access key id and send it to evil.example; the byte-identical run_command from leg 1 is then REFUSED by rule taint:secret-egress, which reports that it tightened allow from shell-readonly to block because the run has consumed untrusted content, and EXECUTED.log holds only the fetch. Leg 3, no proxy in the path: both calls reach the tool. Five checks print PASS and the run ends with the note that no model is in the loop.](docs/demo/tainted-run.gif)
@@ -94,7 +96,7 @@ The `pypi.org` row is allowed as a host and refused anyway, because the URL carr
 Every script here runs real processes over real wires and prints its own verdict. Nothing in the output is typed by hand, and each one exits non-zero if the thing it claims stops being true.
 
 ```bash
-pip install -e . && pip install "pytest>=9"
+pip install -e . && pip install --group dev
 
 python proxy/demo/tainted_run.py       # the recording above: read a page, then try to send
 python proxy/demo/run_demo.py          # an agent, a proxy, an MCP server

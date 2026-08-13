@@ -22,15 +22,17 @@ One case stays outside any runtime guard: if `chokepoint_hook.py` will not compi
 
 ```
 echo '{"tool_name":"Read","tool_input":{"file_path":"/tmp/x"}}' | \
-  /ABSOLUTE/PATH/TO/.venv/bin/python hooks/chokepoint_hook.py --policy /ABSOLUTE/PATH/TO/policy.yaml
+  /ABSOLUTE/PATH/TO/.venv/bin/chokepoint-hook --policy /ABSOLUTE/PATH/TO/policy.yaml
 ```
 
 Exit 0 (with a decision) or exit 2 means the install is sound. **Exit 1 means it is fail-open** — the interpreter cannot load the hook, and every call it was supposed to judge will proceed unjudged.
 
 ## Install
 
+Prefer `chokepoint-init --project /absolute/path --install-settings ~/.claude/settings.json` after `pip install -e .`. That writes a deny-by-default policy for *your* directory and merges the two matcher groups with absolute paths. The rest of this section is the manual equivalent.
+
 1. Copy `hooks/settings.example.json` into your Claude Code settings (`~/.claude/settings.json` or a project's `.claude/settings.json`), merging the `hooks` key if you already have one.
-2. Replace every `/ABSOLUTE/PATH/TO/...` — hooks run with your project as the working directory, so relative paths do not work. **The interpreter path is part of this**: point it at the venv that has PyYAML installed, not at a bare `python3`. An interpreter that cannot import the engine is the fail-open described above, and the verification command there is how you check.
+2. Replace every `/ABSOLUTE/PATH/TO/...` — hooks run with your project as the working directory, so relative paths do not work. After install, `chokepoint-hook` is the venv binary; a bare `python3` has no PyYAML and the hook exits **2** (fail-closed). A truncated hook file still exits **1** (fail-open).
 3. Point `--policy` at your policy file. `$CHOKEPOINT_POLICY` does the same job if you would rather not repeat it on both matchers.
 
 Two matcher groups, because they cover different things: `mcp__.*` for every MCP tool, and an anchored list for the built-ins this policy vocabulary can describe.
