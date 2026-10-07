@@ -57,6 +57,7 @@ def test_console_scripts_are_declared():
     assert 'chokepoint-hook = "hooks.chokepoint_hook:main"' in body
     assert 'chokepoint-proxy = "proxy.__main__:main"' in body
     assert 'chokepoint-init = "hooks.init:main"' in body
+    assert 'chokepoint-policy = "policy.cli:main"' in body
 
 
 def test_policy_yaml_is_declared_package_data():

@@ -14,7 +14,7 @@ python3 -m venv .venv
 .venv/bin/python -m pytest
 ```
 
-That install also puts `chokepoint-init`, `chokepoint-hook` and `chokepoint-proxy` on the venv PATH. `python -m proxy` and `python -m hooks.init` remain valid.
+That install also puts `chokepoint-init`, `chokepoint-hook`, `chokepoint-proxy` and `chokepoint-policy` on the venv PATH. `python -m proxy` and `python -m hooks.init` remain valid.
 
 Python 3.10 or newer. The `--group dev` install is [PEP 735](https://peps.python.org/pep-0735/) and needs pip 25.1 or newer, which the upgrade step supplies. That group is the single list of test-only tools; install it by reference rather than re-typing its members.
 

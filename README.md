@@ -154,6 +154,38 @@ Every directory, in plain words.
 
 **`docs/`** is the long form. The threat model, the limitations with a measurement behind each entry, the attack-coverage matrix, and the disclosure runbook.
 
+## Check a policy before you trust it
+
+A policy is code, so it can be tested. `chokepoint-policy check POLICY CASES` runs a YAML file of tool calls through the same loader and engine both doors use, and holds each one to the verdict and rule id you say it must get:
+
+```yaml
+cases:
+  - tool: read_file
+    arguments: {path: /ABSOLUTE/PATH/TO/PROJECT/src/main.py}
+    verdict: allow
+    rule_id: fs-read-scoped
+  - tool: run_command
+    arguments: {command: "ls -la; cat /etc/shadow"}
+    verdict: block
+    rule_id: default:on_no_match
+```
+
+A case takes `tool`, `verdict` (`allow`, `block` or `ask`) and `rule_id`, plus optional `arguments` and `server`. Any other key is refused. The command prints one line per case, `PASS case N: ...` or `FAIL case N: ... expected ..., got ...`, then a count, and exits **0** when every case matches, **1** when any does not, and **2** when the policy or the cases file does not load. A tool name carrying a credential or declared hidden context is printed redacted.
+
+The coding-agent pack ships with [`policy/packs/coding-agent.cases.yaml`](policy/packs/coding-agent.cases.yaml): a case each rule must fire on, a near miss it must leave alone, and the bypass spellings (compound commands, traversal, nested credential directories, lookalike hosts) that must still be refused. The test suite runs it:
+
+```bash
+.venv/bin/chokepoint-policy check policy/packs/coding-agent.yaml policy/packs/coding-agent.cases.yaml
+```
+
+### Known limits
+
+- **No run state.** Cases are judged the way the hook judges a call, with no session, so `limits:` and `taint:` are never consulted. A case cannot assert a call cap or a taint refusal.
+- **Paths are judged as written.** The doors resolve symlinks and letter case against the filesystem they run on before judging; the check does not, so a case means the same on every machine. A symlink out of an allowed directory, or `.SSH` on a case-insensitive disk, passes here where a door would refuse it.
+- **The verdict is the engine's.** `ask` is reported as `ask`, though the proxy fails it closed because no approver is wired.
+- **The shipped cases use the pack's placeholder.** They check the pack as shipped. After `chokepoint-init` fills in your directory, replace `/ABSOLUTE/PATH/TO/PROJECT` in a copy of the cases file the same way before checking your own policy.
+- **Size caps.** A cases file over 256 KiB, nested more than 64 levels deep, or using YAML aliases (`*name`) is refused with exit 2 rather than parsed.
+
 ## What the security team sees
 
 Every decision, from either enforcement point, emits one structured event, and the event schema is [published and versioned](telemetry/event-schema.json) so a stranger can write their own detection against it. A [Sigma rule](telemetry/sigma) ships for each abuse pattern the gateway can see: an injection-class call blocked, sensitive data in an outbound call, a blocked call retried into the repeat cap, a run cap hit, and an outbound call refused from a session that had read untrusted content. None of them is just asserted. Each rule is fired on real events in the test suite, right next to the benign neighbour it must not fire on.
@@ -225,7 +257,7 @@ These are ideas, not commitments: none of them is scheduled, and the list will c
 - **Finer-grained taint.** Today taint marks the whole session and offers three strictness levels. Finer grades are possible: per-source trust levels, remembering what was read, rules conditioned on both.
 - **Deeper SIEM integration.** The Sigma rules and published schema are the foundation. Ready-made pipelines and guides for common SIEM stacks would shorten the path from "deployed" to "watched".
 - **The tools the hook does not judge yet.** `Grep`, `Glob`, `Task` and the other Claude Code built-ins outside the mapping table get no verdict and no event today. Closing that gap means giving the policy a vocabulary for search and for subagent calls, which is a policy design problem before it is a coding one.
-- **Policy linting and policy tests.** A policy is code, so it should be testable. A linter that flags rules which can never match, or which are wider than they read, plus a way to write cases that assert your own policy's verdicts and run them in CI alongside your other tests.
+- **Policy linting.** `chokepoint-policy check` already holds a policy to cases you write. What is still missing is a linter that flags rules which can never match, or which are wider than they read.
 - **A tamper-evident audit trail.** The decision events are the record of what an agent did. Hash-chaining them, so a deleted or edited event is detectable rather than invisible, is what makes that record hold up on the day someone needs it to.
 - **One gateway, many agents.** Per-agent policies and per-agent identity carried in the events, so a team can run a single chokepoint in front of a fleet instead of one per laptop.
 - **Numbers, done honestly.** If this project ever publishes effectiveness figures, they will come with a public corpus, a stated method, and a date, so anyone can re-run them. Until that exists, there are none. See the note above.
