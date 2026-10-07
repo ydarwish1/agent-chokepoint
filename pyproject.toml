@@ -26,6 +26,7 @@ dependencies = [
 chokepoint-hook = "hooks.chokepoint_hook:main"
 chokepoint-proxy = "proxy.__main__:main"
 chokepoint-init = "hooks.init:main"
+chokepoint-policy = "policy.cli:main"
 
 # Setuptools will not guess among the repo's top-level directories - `deploy`
 # and `telemetry` are documents, not packages - so the real ones are named

@@ -40,7 +40,7 @@ python3 -m venv .venv                 # or: /opt/homebrew/bin/python3.12 -m venv
 .venv/bin/python -m pip install -e .
 ```
 
-That puts three commands on your PATH inside the venv: `chokepoint-init`, `chokepoint-hook`, and `chokepoint-proxy`. The project declares two dependencies, `mcp` and `PyYAML`. Pip pulls in whatever `mcp` needs on top of those. No daemon, no database, no account, and nothing outside that directory.
+That puts four commands on your PATH inside the venv: `chokepoint-init`, `chokepoint-hook`, `chokepoint-proxy`, and `chokepoint-policy`. The project declares two dependencies, `mcp` and `PyYAML`. Pip pulls in whatever `mcp` needs on top of those. No daemon, no database, no account, and nothing outside that directory.
 
 Want the tests too? `.venv/bin/python -m pip install --upgrade pip` and `.venv/bin/python -m pip install --group dev` (PEP 735, pip 25.1+), then `.venv/bin/python -m pytest`. `pip install "pytest>=9"` alone is not enough: without the dev group, `tests/test_telemetry_controls.py` skips instead of checking the event schema.
 
@@ -82,6 +82,8 @@ That is `deny` from `default:on_no_match`. A destructive shell command is `deny`
 **Exit 1 is the one that matters.** In this protocol exit 1 means "non-blocking error, run the tool anyway", so a hook that exits 1 is a hook that permits exactly the call it failed to judge. It happens when Python cannot run the file at all, from a truncated copy or a syntax error, because the interpreter quits before any of the hook's own guards get to run. Nothing inside the file can catch that, which is why you run it by hand.
 
 Point the command at the venv you just made rather than a bare `python3`. An interpreter without PyYAML gives you **exit 2** and `could not import its own engine`, which is safe (the call is blocked) but useless. That used to be exit 1; the import is now guarded. Syntax errors in the hook file are still unguardable exit 1.
+
+To hold your policy to more than two calls, write them down as cases and run `.venv/bin/chokepoint-policy check ~/chokepoint-policy.yaml your-cases.yaml`: exit 0 means every call got the verdict and rule id you wrote, 1 means at least one did not, 2 means a file did not load. The README's "Check a policy before you trust it" has the format.
 
 ## Step 4: wire it into Claude Code by hand (if you skipped `--install-settings`)
 
