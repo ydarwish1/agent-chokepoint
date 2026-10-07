@@ -365,19 +365,22 @@ def _sigma_hits(streams: dict[str, list[dict]], rule_file: Path) -> list[dict]:
     columns = ["stream", "ts", "agent_id", "server", "method", "tool", "arguments",
                "verdict", "rule_id", "owasp", "reason", "decision_ms", "action"]
     con = sqlite3.connect(":memory:")
-    con.execute(f"CREATE TABLE events ({', '.join(c + ' TEXT' for c in columns)})")
+    # pySigma's sqlite backend names the table "logs" from 2.0; 1.x left a <TABLE_NAME>
+    # placeholder instead. Naming the table "logs" and filling the placeholder with it
+    # keeps the same query running under both.
+    con.execute(f"CREATE TABLE logs ({', '.join(c + ' TEXT' for c in columns)})")
     for name, events in streams.items():
         for event in events:
             row = [name] + [
                 json.dumps(event[c]) if isinstance(event.get(c), (dict, list)) else event.get(c)
                 for c in columns[1:]
             ]
-            con.execute(f"INSERT INTO events VALUES ({','.join('?' * len(columns))})", row)
+            con.execute(f"INSERT INTO logs VALUES ({','.join('?' * len(columns))})", row)
 
     (query,) = sigma_sqlite.sqliteBackend().convert(
         SigmaCollection.from_yaml(rule_file.read_text(encoding="utf-8"))
     )
-    cursor = con.execute(query.replace("<TABLE_NAME>", "events"))
+    cursor = con.execute(query.replace("<TABLE_NAME>", "logs"))
     names = [d[0] for d in cursor.description]
     return [dict(zip(names, row)) for row in cursor.fetchall()]
 
