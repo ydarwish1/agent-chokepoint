@@ -1,0 +1,73 @@
+{
+  "categories": [
+    {
+      "key": "step",
+      "title": "Roadmap step",
+      "weight": 30,
+      "criteria": [
+        "Implements exactly the ROADMAP.md step named in the pull request title, and ticks its box in the same change",
+        "Every behaviour the step describes works through its command (chokepoint-policy, chokepoint-log, chokepoint-init), not only inside a helper",
+        "Nothing the step asks for is missing, stubbed or left as a TODO"
+      ]
+    },
+    {
+      "key": "safety",
+      "title": "Security posture",
+      "weight": 25,
+      "criteria": [
+        "Deny by default holds: nothing the default branch blocks or sends to ask becomes allowed, and a policy or input that does not load still stops the gateway instead of enforcing less",
+        "The engine stays a pure function (no network, files or state), and both doors still give the same verdict and rule id for the same call",
+        "Credentials and declared hidden context never reach a log, message or report unredacted; new output goes through the existing redaction helpers"
+      ]
+    },
+    {
+      "key": "correctness",
+      "title": "Correctness",
+      "weight": 15,
+      "criteria": [
+        "Exit codes are documented and tested: 0 success, 1 the check failed, 2 the input could not be loaded or read",
+        "Every event or file format the change touches validates against the published schema, its version is bumped when its shape changes, and older events still validate",
+        "Odd input is handled without a crash: empty, unreadable or huge files, bad encodings, symlinks"
+      ]
+    },
+    {
+      "key": "tests",
+      "title": "Tests",
+      "weight": 20,
+      "criteria": [
+        "pytest passes, and every new behaviour has a test next to the code it covers",
+        "Tests cover bypass attempts, not only the happy path: compound shell commands, case and symlink tricks, edited or reordered input",
+        "Every claim the change adds to a README, docs/ or --help output has a test that would fail if the claim became false"
+      ]
+    },
+    {
+      "key": "quality",
+      "title": "Code quality and docs",
+      "weight": 10,
+      "criteria": [
+        "No new runtime dependency, and it runs on Python 3.10 and 3.14",
+        "Matches the code's existing style: small functions, the same naming, no dead code or duplicate helpers",
+        "README, INSTALL.md and docs/LIMITATIONS.md change where behaviour or a limit changed"
+      ]
+    }
+  ],
+  "protected": [
+    ".github/",
+    ".claude/",
+    ".forge/",
+    "CLAUDE.md",
+    "AGENTS.md",
+    "CODEOWNERS",
+    "LICENSE",
+    "SECURITY.md",
+    "deploy/",
+    "engine/",
+    "policy/loader.py",
+    "policy/policy.example.yaml",
+    "proxy/demo/model-runs/",
+    "telemetry/sigma/",
+    "tests/test_attack_coverage.py",
+    "tests/test_model_run_records.py",
+    "tests/test_suite_is_portable.py"
+  ]
+}
