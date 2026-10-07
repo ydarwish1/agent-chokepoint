@@ -170,7 +170,7 @@ cases:
     rule_id: default:on_no_match
 ```
 
-A case takes `tool`, `verdict` (`allow`, `block` or `ask`) and `rule_id`, plus optional `arguments` and `server`. Any other key is refused. The command prints one line per case, `PASS case N: ...` or `FAIL case N: ... expected ..., got ...`, then a count, and exits **0** when every case matches, **1** when any does not, and **2** when the policy or the cases file does not load. A tool name carrying a credential or declared hidden context is printed redacted.
+A case takes `tool`, `verdict` (`allow`, `block` or `ask`) and `rule_id`, plus optional `arguments` and `server`. Any other key is refused, and so is an argument value no door could receive as JSON: a date, bytes, a set, a non-string key, or a bare `no`, `yes` or `0755` that YAML would turn into a boolean or number (quote it). The command prints one line per case, `PASS case N: ...` or `FAIL case N: ... expected ..., got ...`, then a count, and exits **0** when every case matches, **1** when any does not, and **2** when the policy or the cases file does not load. A tool name, rule id or load error carrying a credential or declared hidden context is printed redacted.
 
 The coding-agent pack ships with [`policy/packs/coding-agent.cases.yaml`](policy/packs/coding-agent.cases.yaml): a case each rule must fire on, a near miss it must leave alone, and the bypass spellings (compound commands, traversal, nested credential directories, lookalike hosts) that must still be refused. The test suite runs it:
 
@@ -184,7 +184,8 @@ The coding-agent pack ships with [`policy/packs/coding-agent.cases.yaml`](policy
 - **Paths are judged as written.** The doors resolve symlinks and letter case against the filesystem they run on before judging; the check does not, so a case means the same on every machine. A symlink out of an allowed directory, or `.SSH` on a case-insensitive disk, passes here where a door would refuse it.
 - **The verdict is the engine's.** `ask` is reported as `ask`, though the proxy fails it closed because no approver is wired.
 - **The shipped cases use the pack's placeholder.** They check the pack as shipped. After `chokepoint-init` fills in your directory, replace `/ABSOLUTE/PATH/TO/PROJECT` in a copy of the cases file the same way before checking your own policy.
-- **Size caps.** A cases file over 256 KiB, nested more than 64 levels deep, or using YAML aliases (`*name`) is refused with exit 2 rather than parsed.
+- **Size caps.** A policy or cases file over 256 KiB, nested more than 64 levels deep, or not a regular file (a pipe, a directory) is refused with exit 2 rather than parsed, even where a door would load that policy. A cases file may not use YAML aliases (`*name`); a policy may.
+- **The policy is read twice.** The command checks the policy file, then hands its path to the loader the doors use, which opens it again. A file swapped between the two reads is loaded without the caps above.
 
 ## What the security team sees
 

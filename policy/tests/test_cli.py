@@ -18,9 +18,14 @@ import pytest
 
 from engine import DEFAULT_RULE_ID, TAINT_EGRESS_RULE_ID, RunState, ToolCall, decide
 from pep import canonical_path
-from pep.log import HIDDEN_CONTEXT_TOOL_NAME_REDACTION_MARKER, TOOL_NAME_REDACTION_MARKER
+from pep.log import (
+    HIDDEN_CONTEXT_REDACTION_MARKER,
+    HIDDEN_CONTEXT_TOOL_NAME_REDACTION_MARKER,
+    REDACTION_MARKER,
+    TOOL_NAME_REDACTION_MARKER,
+)
 from policy import load_policy
-from policy.cli import MAX_CASES_BYTES, MAX_CASES_DEPTH, load_cases, main, run
+from policy.cli import MAX_INPUT_BYTES, MAX_INPUT_DEPTH, load_cases, main, run
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PACK = REPO_ROOT / "policy" / "packs" / "coding-agent.yaml"
@@ -179,7 +184,7 @@ def test_invalid_utf8_exits_2(tmp_path: Path):
 
 
 def test_a_file_over_the_size_cap_exits_2_before_parsing(tmp_path: Path):
-    path = _cases_file(tmp_path, ONE_CASE + "#" * MAX_CASES_BYTES + "\n")
+    path = _cases_file(tmp_path, ONE_CASE + "#" * MAX_INPUT_BYTES + "\n")
     code, err = _check(PACK, path)
     assert code == 2
     assert "larger than" in err
@@ -191,7 +196,7 @@ def test_deep_nesting_is_refused_without_parsing_all_of_it(tmp_path: Path):
     path = _cases_file(tmp_path, "cases: " + "[" * depth + "]" * depth + "\n")
     code, err = _check(PACK, path)
     assert code == 2
-    assert f"nested deeper than {MAX_CASES_DEPTH} levels" in err
+    assert f"nested deeper than {MAX_INPUT_DEPTH} levels" in err
 
 
 def _nested_arguments_case(levels: int) -> str:
@@ -201,8 +206,8 @@ def _nested_arguments_case(levels: int) -> str:
 
 
 def test_nesting_up_to_the_cap_loads_and_one_more_level_does_not(tmp_path: Path):
-    at_cap = _cases_file(tmp_path, _nested_arguments_case(MAX_CASES_DEPTH - 3), "at.yaml")
-    past_cap = _cases_file(tmp_path, _nested_arguments_case(MAX_CASES_DEPTH - 2), "past.yaml")
+    at_cap = _cases_file(tmp_path, _nested_arguments_case(MAX_INPUT_DEPTH - 3), "at.yaml")
+    past_cap = _cases_file(tmp_path, _nested_arguments_case(MAX_INPUT_DEPTH - 2), "past.yaml")
     assert _check(PACK, at_cap)[0] == 0
     code, err = _check(PACK, past_cap)
     assert code == 2
@@ -231,7 +236,7 @@ def _indent(text: str, spaces: int) -> str:
 def test_a_missing_cases_file_exits_2(tmp_path: Path):
     code, err = _check(PACK, tmp_path / "nope.yaml")
     assert code == 2
-    assert "not a regular file" in err
+    assert "FileNotFoundError" in err
 
 
 def test_a_directory_as_cases_exits_2(tmp_path: Path):
@@ -425,3 +430,148 @@ def test_the_readme_example_passes_against_the_pack(tmp_path: Path):
     code, out = _check(PACK, _cases_file(tmp_path, example))
     assert code == 0, out
     assert out.splitlines()[-1] == "2 of 2 cases match"
+
+
+# ------------------------------------- every printed field and error is redacted
+
+
+def test_a_credential_in_an_expected_or_decided_rule_id_is_redacted(tmp_path: Path):
+    policy = tmp_path / "policy.yaml"
+    policy.write_text(
+        f"version: 0\nrules:\n  - {{id: leak-{AKIA}, owasp: LLM01, tool: run_command, decision: block,"
+        " when: {command_matches_any: ['rm']}}\n",
+        encoding="utf-8",
+    )
+    text = ONE_CASE.replace("rule_id: shell-destructive", f"rule_id: expected-{AKIA}")
+    code, out = _check(policy, _cases_file(tmp_path, text))
+    assert code == 1
+    assert AKIA not in out
+    assert out.splitlines()[0] == (
+        f"FAIL case 1: run_command -> expected block {TOOL_NAME_REDACTION_MARKER}, "
+        f"got block {TOOL_NAME_REDACTION_MARKER}"
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # PyYAML quotes the offending source line in its own message.
+        f'cases:\n  - tool: x\n    arguments: {{k: "{AKIA}", ]\n',
+        f"cases:\n  - tool: x\n    verdict: {AKIA}\n    rule_id: y\n",
+        f"cases:\n  - tool: x\n    server: {AKIA}__x\n    verdict: block\n    rule_id: y\n",
+        f"cases:\n  - tool: x\n    {AKIA}: 1\n    verdict: block\n    rule_id: y\n",
+    ],
+    ids=["yaml-snippet", "verdict", "server", "unknown-key"],
+)
+def test_a_credential_in_a_cases_load_error_is_redacted(tmp_path: Path, text: str):
+    code, err = _check(PACK, _cases_file(tmp_path, text))
+    assert code == 2
+    assert err.startswith("chokepoint-policy: cases did not load: ")
+    assert AKIA not in err
+
+
+def test_a_credential_in_a_policy_load_error_is_redacted(tmp_path: Path):
+    policy = tmp_path / "policy.yaml"
+    policy.write_text(f"version: {AKIA}\n", encoding="utf-8")
+    code, err = _check(policy, _cases_file(tmp_path, ONE_CASE))
+    assert code == 2
+    assert AKIA not in err
+    assert REDACTION_MARKER in err
+
+
+def test_declared_hidden_context_in_a_cases_load_error_is_redacted(tmp_path: Path):
+    secret = "the operator's private system prompt, never to leave"
+    hidden = tmp_path / "system-prompt.txt"
+    hidden.write_text(secret + "\n", encoding="utf-8")
+    policy = tmp_path / "policy.yaml"
+    policy.write_text(f"version: 0\nhidden_context:\n  system_prompt: {hidden}\n", encoding="utf-8")
+    text = f'cases:\n  - tool: x\n    verdict: "{secret}"\n    rule_id: y\n'
+    code, err = _check(policy, _cases_file(tmp_path, text))
+    assert code == 2
+    assert secret not in err
+    assert HIDDEN_CONTEXT_REDACTION_MARKER in err
+
+
+def test_a_yaml_error_keeps_its_line_and_column(tmp_path: Path):
+    code, err = _check(PACK, _cases_file(tmp_path, "cases:\n  - tool: x\n    arguments: {k: v, ]\n"))
+    assert code == 2
+    assert "not valid YAML at line 3, column" in err
+    assert "arguments" not in err  # the source line itself is not quoted
+
+
+# ------------------------------------------- POLICY gets the same input guards
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no named pipes on this platform")
+def test_a_named_pipe_as_policy_exits_2_instead_of_waiting_for_a_writer(tmp_path: Path):
+    fifo = tmp_path / "policy.yaml"
+    os.mkfifo(fifo)
+    cases = _cases_file(tmp_path, ONE_CASE)
+    done = subprocess.run(
+        [sys.executable, "-m", "policy.cli", "check", str(fifo), str(cases)],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert done.returncode == 2
+    assert "policy did not load" in done.stderr
+    assert "not a regular file" in done.stderr
+
+
+def test_an_oversized_policy_exits_2_before_parsing(tmp_path: Path):
+    policy = tmp_path / "policy.yaml"
+    policy.write_text("version: 0\n" + "#" * MAX_INPUT_BYTES + "\n", encoding="utf-8")
+    code, err = _check(policy, _cases_file(tmp_path, ONE_CASE))
+    assert code == 2
+    assert "policy did not load" in err
+    assert "larger than" in err
+
+
+def test_a_deeply_nested_policy_exits_2_without_parsing_all_of_it(tmp_path: Path):
+    depth = 100_000
+    policy = tmp_path / "policy.yaml"
+    policy.write_text("version: 0\nrules: " + "[" * depth + "]" * depth + "\n", encoding="utf-8")
+    code, err = _check(policy, _cases_file(tmp_path, ONE_CASE))
+    assert code == 2
+    assert f"nested deeper than {MAX_INPUT_DEPTH} levels" in err
+
+
+def test_a_directory_and_a_missing_file_as_policy_exit_2(tmp_path: Path):
+    cases = _cases_file(tmp_path, ONE_CASE)
+    assert _check(tmp_path, cases)[0] == 2
+    assert _check(tmp_path / "nope.yaml", cases)[0] == 2
+
+
+def test_a_policy_using_anchors_still_loads_as_the_doors_load_it(tmp_path: Path):
+    """Aliases are refused in a cases file only; the doors' loader accepts them in a policy."""
+    policy = tmp_path / "policy.yaml"
+    policy.write_text(
+        "version: 0\nrules:\n"
+        "  - {id: a, owasp: LLM01, tool: run_command, decision: block, when: {command_matches_any: &d ['rm -rf']}}\n"
+        "  - {id: b, owasp: LLM01, tool: exec, decision: block, when: {command_matches_any: *d}}\n",
+        encoding="utf-8",
+    )
+    code, out = _check(policy, _cases_file(tmp_path, ONE_CASE.replace("shell-destructive", "a")))
+    assert code == 0, out
+
+
+# ------------------------------------ arguments hold only what a door delivers
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["2024-01-01", "!!binary aGk=", "!!set {a: null}", "{1: x}", "no", "yes", "On", "0755", "0x1f", ".5", ".inf", "!!float .inf", "1_000"],
+)
+def test_arguments_a_door_would_never_deliver_exit_2(tmp_path: Path, value: str):
+    text = f"cases:\n  - tool: run_command\n    arguments: {{v: {value}}}\n    verdict: block\n    rule_id: default:on_no_match\n"
+    code, err = _check(PACK, _cases_file(tmp_path, text))
+    assert code == 2, err
+    assert "cases did not load" in err
+
+
+@pytest.mark.parametrize("value", ['"no"', "'0755'", "true", "false", "1.5", "-3", "0", "null", "[a, 1, {k: v}]"])
+def test_json_spelled_arguments_load(tmp_path: Path, value: str):
+    text = f"cases:\n  - tool: run_command\n    arguments: {{v: {value}}}\n    verdict: block\n    rule_id: default:on_no_match\n"
+    code, out = _check(PACK, _cases_file(tmp_path, text))
+    assert code == 0, out
